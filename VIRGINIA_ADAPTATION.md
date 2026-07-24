@@ -91,17 +91,35 @@ full site set.
    there is no way to avoid it without changing the line topology decision
    in Step 2, which Dennies confirmed should stay PJM-scoped.
 
-5. **`est_gic.py` has no multiprocessing or `_init_worker` Windows fix.**
-   The plan called this out as a required pattern to carry over. The
-   version of `est_gic.py` in this repo iterates Monte Carlo samples
+5. **`est_gic.py` has no multiprocessing, but `calc_storm_maxes.py` does —
+   and its `Pool` has no initializer, which matters because the target
+   machine is Windows.** `est_gic.py` iterates Monte Carlo samples
    sequentially (parallelizing only per-return-period GIC calc within one
-   iteration, via `ThreadPoolExecutor`) — there's no `multiprocessing.Pool`
-   to break on Windows `spawn`. `scripts/run_virginia_gic.py` follows the
-   same sequential structure rather than inventing multiprocessing the
-   reference implementation doesn't have. (`calc_storm_maxes.py` *does* use
-   `multiprocessing.Pool` with no initializer either — it relies on
-   fork-inherited module globals, which is exactly the pattern
-   `scripts/recompute_virginia_line_voltages.py` uses on Linux.)
+   iteration, via `ThreadPoolExecutor` — threads share the parent's memory
+   regardless of platform, so this is fine as-is); `scripts/run_virginia_gic.py`
+   follows the same sequential structure rather than inventing
+   multiprocessing the reference implementation doesn't have.
+   `calc_storm_maxes.py`, however, *does* use a bare `multiprocessing.Pool`
+   whose worker function (`process_storm`) reads `MT_sites`/`df`/`obs_dict`/
+   `n_trans_lines` as module globals — set only inside the script's own
+   `if __name__ == "__main__":` guard. An early version of
+   `scripts/recompute_virginia_line_voltages.py` (which reuses
+   `calculate_maxes()` the same way) assumed `Pool()` forks and inherits
+   those monkeypatched globals for free. That's true on Linux, but **not on
+   Windows** — the reference machine's platform — where `Pool()` defaults to
+   `spawn`: each worker re-imports `scripts.calc_storm_maxes` fresh, without
+   the monkeypatched attributes, `calculate_maxes()` raises `NameError`, and
+   `process_storm`'s own `try/except` silently swallows it per storm. The
+   run "completes" with an all-zero `maxV_arr` instead of crashing —
+   exactly the failure mode the original plan's `_init_worker` warning was
+   about. Fixed in `recompute_virginia_line_voltages.py` with a proper
+   `Pool(initializer=_init_worker, initargs=(...))` that re-applies the same
+   globals inside every worker. **`calc_storm_maxes.py`'s own `main()` was
+   left untouched** (out of scope here, and it's the already-run, "do not
+   modify" reference pipeline) **but appears to have this same latent bug on
+   Windows** — worth Dennies confirming whether the original US run actually
+   went through this code path or a different, since-diverged version,
+   since a silent all-empty result wouldn't necessarily have been obvious.
 
 6. **Functions that need a data directory but don't take one as a
    parameter** (`build_admittance_matrix.get_transformer_samples()`,

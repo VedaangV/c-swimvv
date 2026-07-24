@@ -29,12 +29,17 @@ This script:
    needs that scripts/build_virginia_network.py doesn't already produce).
 2. Replays scripts/calc_storm_maxes.calculate_maxes() for every storm in
    kp_ap_indices/storm_periods.csv against those VA+PJM lines to build a
-   (n_va_lines, n_storms) voltage-maxima array, reusing
-   scripts/calc_storm_maxes.process_storm() for the same fork-based
-   multiprocessing.Pool the original US pipeline uses (no Windows
-   spawn/_init_worker fix is needed here — process_storm/calculate_maxes
-   read module-level globals which we monkeypatch below, and Pool()
-   without an explicit context uses fork on Linux, which inherits them).
+   (n_va_lines, n_storms) voltage-maxima array via multiprocessing.Pool.
+   calculate_maxes() reads MT_sites/df/obs_dict/n_trans_lines as module
+   globals on scripts.calc_storm_maxes, which we monkeypatch below in the
+   parent process — and, since the target machine is Windows (spawn, not
+   fork), also re-apply in every worker via the _init_worker Pool
+   initializer, exactly the pattern the original adaptation plan called
+   for. Without it, each spawned worker re-imports scripts.calc_storm_maxes
+   fresh without those attributes set, calculate_maxes() raises NameError,
+   process_storm-style exception handling swallows it per-storm, and the
+   run "completes" with a silently all-zero maxV_arr instead of failing
+   loudly. See _init_worker's docstring for the full mechanics.
 3. Fits return-period statistics on that array using
    scripts/stat_analysis.py's bootstrap machinery unmodified.
 4. Packages sites/mt_sites, sites/transmission_lines, events/*, and
@@ -76,6 +81,28 @@ ST_PATRICKS_START = datetime(2015, 3, 17, 0)
 ST_PATRICKS_END = ST_PATRICKS_START + timedelta(days=1)
 HYDRO_QUEBEC_START = datetime(1989, 3, 13, 0)
 HYDRO_QUEBEC_END = HYDRO_QUEBEC_START + timedelta(days=1)
+
+
+def _init_worker(mt_sites, df_, n_lines, obsdict):
+    """multiprocessing.Pool initializer for Windows (spawn) workers.
+
+    On Linux, Pool() forks — child processes inherit the parent's already
+    -monkeypatched scripts.calc_storm_maxes module object (csm.MT_sites,
+    csm.df, csm.obs_dict, csm.n_trans_lines set in main() below) for free.
+    On Windows there is no fork; each worker starts a fresh interpreter and
+    re-imports scripts.calc_storm_maxes from scratch, which does NOT have
+    those attributes set (they're only assigned inside this script's own
+    `if __name__ == "__main__":` block, which — correctly — never re-runs in
+    spawned children). Without this initializer, _process_storm_va's call to
+    csm.calculate_maxes() would raise NameError on MT_sites/df/obs_dict/
+    n_trans_lines in every worker — caught by its own try/except and logged,
+    so the run would silently "complete" with an all-zero maxV_arr instead
+    of crashing. Re-set the same globals here so it's correct on both
+    platforms."""
+    csm.MT_sites = mt_sites
+    csm.df = df_
+    csm.n_trans_lines = n_lines
+    csm.obs_dict = obsdict
 
 
 def _process_storm_va(args):
@@ -120,7 +147,11 @@ def compute_va_maxV_arr(storm_df, n_va_lines, n_workers=None):
     n_workers = n_workers or min(8, multiprocessing.cpu_count())
     logger.info(f"Recomputing VA line voltages for {n_storms} storms ({n_workers} workers)...")
 
-    with multiprocessing.Pool(n_workers) as pool:
+    with multiprocessing.Pool(
+        n_workers,
+        initializer=_init_worker,
+        initargs=(csm.MT_sites, csm.df, csm.n_trans_lines, csm.obs_dict),
+    ) as pool:
         for i, maxV in pool.imap_unordered(_process_storm_va, args):
             if maxV is None:
                 continue
