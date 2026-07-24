@@ -54,11 +54,20 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 GRID_OUT_DIR = VA_NETWORK_DIR.parent / "grid_processed"
 GRID_OUT_DIR.mkdir(parents=True, exist_ok=True)
 
+# overpass.openstreetmap.ru dropped: unreachable from the reference machine's
+# network (hard connect timeout on every attempt, not a query/rate problem —
+# see VIRGINIA_ADAPTATION.md). Keeping it in the list just burns ~4 minutes
+# per state for a server that will never answer.
 OVERPASS_SERVERS = [
     "https://overpass-api.de/api/interpreter",
     "https://overpass.kumi.systems/api/interpreter",
-    "https://overpass.openstreetmap.ru/api/interpreter",
 ]
+
+# Public Overpass instances reject/rate-limit requests without a real
+# User-Agent — overpass-api.de returned HTTP 406 and kumi returned HTTP 429
+# with an explicit "include a meaningful User-Agent string" message when this
+# script sent Python's default `python-requests/x.y.z` UA.
+OVERPASS_USER_AGENT = "c-swim-virginia-adaptation/1.0 (+https://github.com/VedaangV/c-swimvv)"
 
 # Same voltage standardization used by preprocess/08_p_power_grid.py, copied
 # verbatim so the two pipelines classify voltage classes identically.
@@ -87,18 +96,19 @@ p08 = _load_module("_c_swim_preprocess_08", "preprocess/08_p_power_grid.py")
 # Step A: PJM substations from OpenStreetMap (Overpass)
 # --------------------------------------------------------------------------
 def _query_overpass(query: str, timeout: int = 180, retries: int = 2) -> dict | None:
-    """POST an Overpass query, trying each server in OVERPASS_SERVERS in turn.
-    Logs the real reason for every failed attempt — a single whole-PJM query
-    was silently swallowing 400/429 responses from overpass-api.de/kumi
-    behind a fast failure, leaving only the last (unrelated) timeout from
-    openstreetmap.ru visible in the logs. Chunking by state (see
-    download_pjm_substations) also means a failed state doesn't need to
-    retry with the same aggressiveness as a one-shot whole-region query, so
-    the retry budget here is intentionally smaller than the original."""
+    """POST an Overpass query, trying each server in OVERPASS_SERVERS in turn,
+    with a proper User-Agent set (public instances return 406/429 against
+    requests' default UA). Logs the real reason for every failed attempt —
+    a single whole-PJM query was silently swallowing these errors behind a
+    fast failure, leaving only the last attempt's message visible in the
+    logs. Chunking by state (see download_pjm_substations) also means a
+    failed state doesn't need to retry as aggressively as a one-shot
+    whole-region query, so the retry budget here is intentionally small."""
+    headers = {"User-Agent": OVERPASS_USER_AGENT}
     for url in OVERPASS_SERVERS:
         for attempt in range(retries):
             try:
-                r = requests.post(url, data={"data": query}, timeout=timeout + 30)
+                r = requests.post(url, data={"data": query}, headers=headers, timeout=timeout + 30)
                 if r.status_code == 200:
                     return r.json()
                 logger.warning(
