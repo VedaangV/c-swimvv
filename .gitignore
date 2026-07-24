@@ -68,6 +68,9 @@ data/substation_locations_relations/
 data/substations_raw.csv
 data/grid_mapping.csv
 
+# Virginia adaptation outputs (large, regenerable — see VIRGINIA_ADAPTATION.md)
+data/virginia/
+
 # Figures
 figures/
 
