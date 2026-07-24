@@ -125,7 +125,14 @@ def _query_overpass(query: str, timeout: int = 180, retries: int = 2) -> dict | 
 def _substations_from_nodeway(data: dict | None) -> gpd.GeoDataFrame:
     if not data or not data.get("elements"):
         return gpd.GeoDataFrame()
-    return p06.process_substations(p06.convert_to_geodataframe(data))
+    gdf = p06.process_substations(p06.convert_to_geodataframe(data))
+    # convert_to_geodataframe() sets 'osmid' as the index; bring it back out
+    # to a real column so it lines up with _substations_from_relations()'s
+    # output (which never indexes by osmid) — concatenating an osmid-index
+    # frame with an osmid-column frame and then reset_index()/renaming was
+    # producing two separate "osmid" columns and tripping GeoPandas' "cannot
+    # contain duplicated column names" check on write.
+    return gdf.reset_index() if len(gdf) else gdf
 
 
 def _substations_from_relations(data: dict | None) -> gpd.GeoDataFrame:
@@ -216,12 +223,10 @@ def download_pjm_substations() -> gpd.GeoDataFrame:
             "patch in a partial retry for just the failed ones)."
         )
 
-    merged = pd.concat(parts, ignore_index=False)
-    merged = merged[~merged.index.duplicated(keep="first")]
+    merged = pd.concat(parts, ignore_index=True)
     merged = merged.dropna(subset=["geometry"])
-    merged = gpd.GeoDataFrame(merged, crs="EPSG:4326").reset_index().rename(
-        columns={"index": "osmid"}
-    )
+    merged = merged.drop_duplicates(subset="osmid", keep="first")
+    merged = gpd.GeoDataFrame(merged, crs="EPSG:4326")
 
     merged.to_file(cache, driver="GeoJSON")
     logger.info(f"Downloaded {len(merged)} PJM substations -> {cache}")
