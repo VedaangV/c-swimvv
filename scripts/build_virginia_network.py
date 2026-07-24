@@ -40,9 +40,9 @@ from shapely.geometry import Point
 from configs import setup_logger, get_data_dir
 from configs.virginia_config import (
     EHV_VOLTAGE_THRESHOLD,
-    PJM_BBOX,
     VA_NETWORK_DIR,
     get_pjm_boundary,
+    get_pjm_geodataframe,
 )
 
 warnings.filterwarnings("ignore")
@@ -86,80 +86,125 @@ p08 = _load_module("_c_swim_preprocess_08", "preprocess/08_p_power_grid.py")
 # --------------------------------------------------------------------------
 # Step A: PJM substations from OpenStreetMap (Overpass)
 # --------------------------------------------------------------------------
-def _query_overpass(query: str, timeout: int = 300, retries: int = 3) -> dict | None:
-    last_err = None
+def _query_overpass(query: str, timeout: int = 180, retries: int = 2) -> dict | None:
+    """POST an Overpass query, trying each server in OVERPASS_SERVERS in turn.
+    Logs the real reason for every failed attempt — a single whole-PJM query
+    was silently swallowing 400/429 responses from overpass-api.de/kumi
+    behind a fast failure, leaving only the last (unrelated) timeout from
+    openstreetmap.ru visible in the logs. Chunking by state (see
+    download_pjm_substations) also means a failed state doesn't need to
+    retry with the same aggressiveness as a one-shot whole-region query, so
+    the retry budget here is intentionally smaller than the original."""
     for url in OVERPASS_SERVERS:
         for attempt in range(retries):
             try:
-                logger.info(f"Overpass {url} (attempt {attempt + 1}/{retries})")
-                r = requests.post(url, data={"data": query}, timeout=timeout + 60)
+                r = requests.post(url, data={"data": query}, timeout=timeout + 30)
                 if r.status_code == 200:
                     return r.json()
-                last_err = f"{url} -> HTTP {r.status_code}"
+                logger.warning(
+                    f"Overpass {url} (attempt {attempt + 1}/{retries}) -> "
+                    f"HTTP {r.status_code}: {r.text[:300]!r}"
+                )
             except Exception as e:
-                last_err = f"{url} -> {e!r}"
+                logger.warning(f"Overpass {url} (attempt {attempt + 1}/{retries}) -> {e!r}")
             time.sleep(3 * (attempt + 1))
-    logger.error(f"All Overpass servers failed. Last error: {last_err}")
+    logger.error(f"All Overpass servers failed for this query (first 120 chars: {query.strip()[:120]!r})")
     return None
 
 
+def _substations_from_nodeway(data: dict | None) -> gpd.GeoDataFrame:
+    if not data or not data.get("elements"):
+        return gpd.GeoDataFrame()
+    return p06.process_substations(p06.convert_to_geodataframe(data))
+
+
+def _substations_from_relations(data: dict | None) -> gpd.GeoDataFrame:
+    if not data or not data.get("elements"):
+        return gpd.GeoDataFrame()
+    feats = []
+    for el in data["elements"]:
+        if el.get("type") != "relation" or "center" not in el:
+            continue
+        tags = el.get("tags", {})
+        feats.append(
+            {
+                "osmid": el["id"],
+                "element_type": "relation",
+                "original_geom_type": "RelationCenter",
+                **tags,
+                "geometry": Point(el["center"]["lon"], el["center"]["lat"]),
+            }
+        )
+    if not feats:
+        return gpd.GeoDataFrame()
+    return p06.process_substations(gpd.GeoDataFrame(feats, crs="EPSG:4326"))
+
+
 def download_pjm_substations() -> gpd.GeoDataFrame:
-    """Download PJM-bbox substations (nodes/ways + relations) from OSM."""
+    """Download PJM substations (nodes/ways + relations) from OSM, one state
+    at a time.
+
+    A single query over the whole 13-state PJM bounding box was getting
+    rejected quickly by overpass-api.de/kumi (public-instance query-size/rate
+    limits) while overpass.openstreetmap.ru genuinely timed out at the
+    network level. Chunking by state — the same strategy
+    preprocess/06_dl_power_grid_update.py already uses for the full-CONUS
+    download — keeps each request small enough to succeed, and a failure on
+    one state no longer loses the other twelve.
+    """
     cache = VA_NETWORK_DIR / "va_pjm_substations_raw.geojson"
     if cache.exists():
         logger.info(f"Using cached PJM substations: {cache}")
         return gpd.read_file(cache)
 
-    south, west, north, east = PJM_BBOX
+    pjm_states = get_pjm_geodataframe()
+    parts = []
+    failed_states = []
 
-    nodeway_query = f"""
-    [out:json][timeout:300][bbox:{south},{west},{north},{east}];
-    (
-      node["power"="substation"];
-      way["power"="substation"];
-    );
-    out body geom;
-    """
-    relation_query = f"""
-    [out:json][timeout:300][bbox:{south},{west},{north},{east}];
-    (
-      relation["power"="substation"];
-    );
-    out body center;
-    """
+    for _, row in pjm_states.iterrows():
+        state = row["STUSPS"]
+        west, south, east, north = row.geometry.bounds
+        logger.info(f"Downloading OSM substations for {state} ({south:.2f},{west:.2f},{north:.2f},{east:.2f})...")
 
-    nodeway_data = _query_overpass(nodeway_query)
-    nodeway_gdf = (
-        p06.process_substations(p06.convert_to_geodataframe(nodeway_data))
-        if nodeway_data and nodeway_data.get("elements")
-        else gpd.GeoDataFrame()
-    )
+        nodeway_query = f"""
+        [out:json][timeout:150][bbox:{south},{west},{north},{east}];
+        (
+          node["power"="substation"];
+          way["power"="substation"];
+        );
+        out body geom;
+        """
+        relation_query = f"""
+        [out:json][timeout:150][bbox:{south},{west},{north},{east}];
+        (
+          relation["power"="substation"];
+        );
+        out body center;
+        """
 
-    relation_data = _query_overpass(relation_query)
-    relation_feats = []
-    if relation_data and relation_data.get("elements"):
-        for el in relation_data["elements"]:
-            if el.get("type") != "relation" or "center" not in el:
-                continue
-            tags = el.get("tags", {})
-            relation_feats.append(
-                {
-                    "osmid": el["id"],
-                    "element_type": "relation",
-                    "original_geom_type": "RelationCenter",
-                    **tags,
-                    "geometry": Point(el["center"]["lon"], el["center"]["lat"]),
-                }
-            )
-    relation_gdf = (
-        gpd.GeoDataFrame(relation_feats, crs="EPSG:4326") if relation_feats else gpd.GeoDataFrame()
-    )
-    if len(relation_gdf) > 0:
-        relation_gdf = p06.process_substations(relation_gdf)
+        nodeway_gdf = _substations_from_nodeway(_query_overpass(nodeway_query))
+        relation_gdf = _substations_from_relations(_query_overpass(relation_query))
 
-    parts = [g for g in (nodeway_gdf, relation_gdf) if len(g) > 0]
+        state_parts = [g for g in (nodeway_gdf, relation_gdf) if len(g) > 0]
+        if state_parts:
+            logger.info(f"  {state}: {sum(len(g) for g in state_parts)} substations")
+            parts.extend(state_parts)
+        else:
+            failed_states.append(state)
+            logger.warning(f"  {state}: no substations downloaded (all servers failed)")
+
+        time.sleep(3)
+
     if not parts:
-        raise RuntimeError("No PJM substations downloaded from any Overpass server.")
+        raise RuntimeError("No PJM substations downloaded from any Overpass server for any state.")
+    if failed_states:
+        logger.warning(
+            f"Substation download failed for: {failed_states}. The network "
+            "will be missing substations in those states — re-run this "
+            "script (cached states aren't re-downloaded once "
+            f"{cache} exists, so delete it first to retry all states, or "
+            "patch in a partial retry for just the failed ones)."
+        )
 
     merged = pd.concat(parts, ignore_index=False)
     merged = merged[~merged.index.duplicated(keep="first")]
