@@ -106,7 +106,9 @@ RG_REAL = 0.2  # grounding resistance for real substations
 # Max distance (meters) to snap a line endpoint to the nearest substation.
 SNAP_DISTANCE_M = 1500
 
-# Monte Carlo iterations for the GIC simulation. The full US pipeline uses
-# 3000; Virginia uses fewer given the ASSIP time constraints. Consult Dennies
-# before treating this as a final sample size for reported results.
-N_MONTE_CARLO = 500
+# Monte Carlo iterations for the GIC simulation. Matches the full US
+# pipeline's 3000 for directly comparable statistical rigor (confidence
+# intervals on par with the national paper) — bumped up from an initial 500
+# used for early pipeline validation, now that the pipeline is proven
+# end-to-end against real data.
+N_MONTE_CARLO = 3000
