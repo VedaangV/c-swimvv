@@ -31,6 +31,7 @@ from shapely.geometry import Point
 from configs import setup_logger, get_data_dir, ECON_DATA_DIR
 from configs.virginia_config import (
     VA_ADMITTANCE_DIR,
+    VA_FIPS,
     VA_GIC_DIR,
     VA_GND_GIC_DIR,
     VA_ECON_DIR,
@@ -125,13 +126,20 @@ def filter_socioeconomic_data(va_boundary) -> None:
     with open(src, "rb") as f:
         naics_est_gdp, zcta_pop_20, regions_pop_df, zcta_business_gdf, states_gdf = pickle.load(f)
 
-    if "STABBR" not in zcta_pop_20.columns:
+    # None of these five tables carries a state abbreviation directly (the
+    # STABBR column p_econ_data.py's docstring implied doesn't survive into
+    # the saved pickle on the reference machine). naics_est_gdp and
+    # regions_pop_df do carry a county FIPS ("GeoFips") whose first two
+    # digits are the state FIPS — use that to derive the Virginia ZCTA set,
+    # then filter every other table by ZCTA membership in it.
+    if "GeoFips" not in regions_pop_df.columns:
         raise ValueError(
-            "Expected a STABBR column on zcta_pop_20 (econ/preprocess/p_econ_data.py's "
-            "create_zcta_population_csv output) to identify Virginia ZCTAs."
+            "Expected a GeoFips column on regions_pop_df to derive Virginia ZCTAs "
+            f"from county FIPS; got columns {list(regions_pop_df.columns)}."
         )
 
-    va_zctas = set(zcta_pop_20.loc[zcta_pop_20["STABBR"] == "VA", "ZCTA"])
+    geo_fips = regions_pop_df["GeoFips"].astype(str).str.zfill(5)
+    va_zctas = set(regions_pop_df.loc[geo_fips.str[:2] == VA_FIPS, "ZCTA"])
     logger.info(f"Virginia ZCTAs: {len(va_zctas)}")
 
     va_naics_est_gdp = naics_est_gdp[naics_est_gdp["ZCTA"].isin(va_zctas)].copy()
@@ -142,7 +150,7 @@ def filter_socioeconomic_data(va_boundary) -> None:
     if "STUSPS" in states_gdf.columns:
         va_states_gdf = states_gdf[states_gdf["STUSPS"] == "VA"].copy()
     elif "STATEFP" in states_gdf.columns:
-        va_states_gdf = states_gdf[states_gdf["STATEFP"] == "51"].copy()
+        va_states_gdf = states_gdf[states_gdf["STATEFP"] == VA_FIPS].copy()
     else:
         logger.warning("Could not identify VA row in states_gdf by STUSPS/STATEFP; keeping all.")
         va_states_gdf = states_gdf
