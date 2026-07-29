@@ -128,22 +128,48 @@ full site set.
    as the original plan anticipated for cases where "functions don't accept
    arguments."
 
-7. **Economic-model hookup is bounded, not complete.** `run_econ.py`'s
-   analysis step depends on a much longer chain
-   (`econ/preprocess/p_gic_files.py` → `p_areal_intp.py` → SAM/technology
-   tables → `econ/scripts/econ_analysis.py`) than "filter ZCTA data, run
-   `run_econ.py analysis`" suggested. In particular,
-   `econ/preprocess/p_econ_data.py`'s `socioeconomic_data.pkl` bundles a
-   Voronoi-polygon mapping of ZCTAs to the *nearest EHV substation*, built
-   from `data/admittance_matrix/substation_info.csv` — the original US
-   network, not Virginia's. `scripts/extract_virginia_results.py` filters
-   the ZCTA-level tables to Virginia (a legitimate, mechanical filter, since
-   `zcta_pop_20` carries a `STABBR` column) and filters GIC results to
-   Virginia substations, but stops there. Rebuilding the Voronoi mapping
-   against `data/virginia/admittance_matrix/substation_info.csv` and
-   deciding whether the IO/CGE tables should be applied at national or
-   regional scope is a methodology question for Dennies, not a path swap —
-   flagging it here rather than guessing.
+7. **Economic-model hookup is bounded, not complete — and the SAM-scope
+   question has now been decided, provisionally.** `run_econ.py`'s analysis
+   step depends on a much longer chain (`econ/preprocess/p_gic_files.py` →
+   `p_areal_intp.py` → SAM/technology tables → `econ/scripts/econ_analysis.py`)
+   than "filter ZCTA data, run `run_econ.py analysis`" suggested, and the
+   real schema differs from what reading the source implied — the
+   `STABBR` column `scripts/extract_virginia_results.py` originally assumed
+   on `zcta_pop_20` doesn't exist in the actual pickle on the reference
+   machine (confirmed via `scripts/_inspect_socioeconomic_data.py`); the fix
+   derives Virginia's ZCTA set from `naics_est_gdp`/`regions_pop_df`'s
+   `GeoFips` (county FIPS, first two digits = state FIPS) instead.
+
+   **Decision (national SAM/technology tables, driven by a
+   Virginia-localized shock):** rather than building a bespoke
+   Virginia-regional SAM — which would require its own supply-use tables
+   and econometric balancing, a separate research project on its own —
+   Virginia's IO impact analysis should reuse the existing national
+   SAM/technology tables and drive them with Virginia's own GIC exposure
+   (population/business counts from Virginia ZCTAs, attributed via a
+   Voronoi tessellation of *Virginia+PJM* substations rather than the
+   national substation set). This is standard practice in sub-national
+   disaster-economics impact studies. Flag for Dennies to override if he
+   disagrees, but it's the only tractable choice on the ASSIP timeline.
+
+   **What's actually still needed to wire this up, and why it isn't done
+   yet:** unlike everything else in this document, the remaining chain
+   isn't just a path-substitution problem.
+   `econ/scripts/econ_analysis.py` solves the Leontief/Ghosh IO models via
+   `pyomo` + an external `ipopt` solver binary, and `configs/settings.py`
+   hardcodes that binary's path to a Linux location
+   (`IPOPT_EXEC = "/home/pve_ubuntu/.../bin/ipopt"`) that will not exist on
+   the reference Windows machine without a real install + config fix.
+   `econ/preprocess/p_areal_intp.py` does raster-based dasymetric
+   interpolation (`tobler.dasymetric.masked_area_interpolate`, tiled
+   `rasterio` reads over the national NLCD land-cover raster) to map
+   economic exposure onto substation Voronoi cells — a real geospatial
+   subsystem, not more pandas. `scripts/_check_econ_pipeline_deps.py` checks
+   whether IPOPT, `pyomo`, `rasterio`/`tobler`, the NLCD raster, and the
+   SAM/technology CSVs are actually present and working before any of this
+   is worth writing code against — run it and share the output before
+   asking for the Virginia-scoped adaptation of `p_areal_intp.py`/
+   `econ_analysis.py`.
 
 ## Repository layout (this repo, not the Windows path in the original plan)
 
@@ -185,12 +211,17 @@ before treating results as final.
 
 ## Open items for Dennies
 
-- Confirm `N_MONTE_CARLO=500` is an acceptable sample size for reported
-  results (or a different number).
-- Decide the intended scope for the economic-impact question (national SAM
-  applied to Virginia's GIC exposure vs. a Virginia-specific regional
-  account) before extending `scripts/extract_virginia_results.py` into the
-  full `econ/` pipeline.
+- `N_MONTE_CARLO` is set to 3000 (matching the national pipeline) as of the
+  first full run against real data — confirm this is an acceptable final
+  sample size, or a different number, for reported results.
+- The SAM-scope question (item 7 above) has a provisional decision —
+  national SAM/technology tables, driven by a Virginia-localized GIC
+  shock — made without Dennies' sign-off, given the ASSIP timeline.
+  Confirm or override before treating any resulting $/day figures as
+  final.
+- `IPOPT_EXEC` in `configs/settings.py` needs a real Windows path (or a
+  working `ipopt` on `PATH`) before `econ/scripts/econ_analysis.py` can run
+  at all — check with `scripts/_check_econ_pipeline_deps.py`.
 - `Aaditya Bose` is building a parallel VA+PJM network independently per the
   original plan — worth a methodology sync given `build_virginia_network.py`
   makes several concrete choices (FERC-sjoin replaced with a PJM boundary
