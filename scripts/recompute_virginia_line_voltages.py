@@ -133,6 +133,33 @@ def build_va_trans_lines_pickle(MT_sites):
     return df
 
 
+def save_gannon_delaunay_v(storm_df, gannon_idx):
+    """Save the full per-minute Gannon-storm line-voltage matrix.
+
+    scripts.est_gic.load_and_process_gic_data() unconditionally loads
+    `<DATA_LOC>/storm_maxes/delaunay_v_gannon.npy` to determine each line's
+    voltage polarity (v_direction() needs the full per-minute time series,
+    not just the storm's peak magnitude — a majority-sign vote across many
+    samples, not a single scalar). compute_va_maxV_arr() above deliberately
+    calls calculate_maxes(is_special=False) for every storm to get just the
+    aggregated max (cheaper, and all the return-period fitting needs), which
+    means it never produces this file. Compute it separately, once, for the
+    Gannon storm only.
+    """
+    cache = VA_STORM_MAXES_DIR / "delaunay_v_gannon.npy"
+    if cache.exists():
+        logger.info(f"Using cached Gannon delaunay-V matrix: {cache}")
+        return
+
+    gannon_row = storm_df.loc[gannon_idx]
+    logger.info(f"Computing full per-minute Gannon-storm line voltages ({gannon_row['Start']} - {gannon_row['End']})...")
+    _, _, arr_delaunay, _, _ = csm.calculate_maxes(
+        gannon_row["Start"], gannon_row["End"], calcV=True, is_special=True
+    )
+    np.save(cache, arr_delaunay)
+    logger.info(f"Saved {cache}")
+
+
 def compute_va_maxV_arr(storm_df, n_va_lines, n_workers=None):
     """Replay calculate_maxes() for every storm against the VA+PJM lines."""
     cache = VA_STORM_MAXES_DIR / "va_maxV_arr.npy"
@@ -250,6 +277,8 @@ def main():
         "st_patricks": event_idx(ST_PATRICKS_START, ST_PATRICKS_END),
         "hydro_quebec": event_idx(HYDRO_QUEBEC_START, HYDRO_QUEBEC_END),
     }
+
+    save_gannon_delaunay_v(storm_df, events["gannon"][0])
 
     va_line_ids = df["line_id"].astype(str).to_numpy()
     va_mt_names = [MT_sites[i].name for i in pjm_indices]
