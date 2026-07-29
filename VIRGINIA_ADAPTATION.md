@@ -152,14 +152,21 @@ full site set.
    disaster-economics impact studies. Flag for Dennies to override if he
    disagrees, but it's the only tractable choice on the ASSIP timeline.
 
-   **What's actually still needed to wire this up, and why it isn't done
-   yet:** unlike everything else in this document, the remaining chain
-   isn't just a path-substitution problem.
-   `econ/scripts/econ_analysis.py` solves the Leontief/Ghosh IO models via
-   `pyomo` + an external `ipopt` solver binary, and `configs/settings.py`
-   hardcodes that binary's path to a Linux location
-   (`IPOPT_EXEC = "/home/pve_ubuntu/.../bin/ipopt"`) that will not exist on
-   the reference Windows machine without a real install + config fix.
+   **What was actually blocking this, and what's fixed:** unlike everything
+   else in this document, the remaining chain isn't just a
+   path-substitution problem — but `scripts/_check_econ_pipeline_deps.py`
+   run against the reference Windows machine found the underlying tools all
+   present and working (IPOPT on `PATH`, `rasterio`/`tobler`/`geopandas`
+   importable, the NLCD raster + coarse mask + all SAM/technology CSVs on
+   disk). Two real cross-platform bugs did surface and are fixed:
+   `configs/settings.py`'s `IPOPT_EXEC` hardcoded a Linux path
+   (`/home/pve_ubuntu/.../bin/ipopt`) — now resolved via `shutil.which("ipopt")`
+   first, falling back to that literal only if not found on `PATH` — and
+   `econ/scripts/econ_analysis.py` had that *same* Linux path hardcoded
+   inline a second time (bypassing the config entirely), now using the
+   `IPOPT_EXEC` constant like the rest of the codebase already does. Neither
+   fix is Virginia-specific; both were live bugs in the shared national
+   pipeline whenever run on Windows.
    `econ/preprocess/p_areal_intp.py` does raster-based dasymetric
    interpolation (`tobler.dasymetric.masked_area_interpolate`, tiled
    `rasterio` reads over the national NLCD land-cover raster) to map
@@ -219,9 +226,11 @@ before treating results as final.
   shock — made without Dennies' sign-off, given the ASSIP timeline.
   Confirm or override before treating any resulting $/day figures as
   final.
-- `IPOPT_EXEC` in `configs/settings.py` needs a real Windows path (or a
-  working `ipopt` on `PATH`) before `econ/scripts/econ_analysis.py` can run
-  at all — check with `scripts/_check_econ_pipeline_deps.py`.
+- `IPOPT_EXEC` resolution and `econ_analysis.py`'s duplicate hardcoded path
+  are fixed (see item 7 above) — re-run `scripts/_check_econ_pipeline_deps.py`
+  to confirm `pyomo`'s `SolverFactory("ipopt")` actually solves after these
+  fixes, since the diagnostic script itself had a false-negative bug (missing
+  `pyomo.environ` import) that's separate from the two real fixes.
 - `Aaditya Bose` is building a parallel VA+PJM network independently per the
   original plan — worth a methodology sync given `build_virginia_network.py`
   makes several concrete choices (FERC-sjoin replaced with a PJM boundary

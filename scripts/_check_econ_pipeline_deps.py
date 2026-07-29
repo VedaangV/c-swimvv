@@ -21,10 +21,11 @@ print(f"  found on PATH: {found_on_path or 'NOT FOUND'}")
 
 print("\n=== pyomo + solver ===")
 try:
+    import pyomo.environ  # noqa: F401 -- triggers pyomo's solver-plugin registration
     from pyomo.opt import SolverFactory
 
-    opt = SolverFactory("ipopt")
-    print(f"  pyomo SolverFactory('ipopt').available(): {opt.available()}")
+    opt = SolverFactory("ipopt", executable=IPOPT_EXEC)
+    print(f"  pyomo SolverFactory('ipopt', executable=IPOPT_EXEC).available(): {opt.available()}")
 except Exception as e:
     print(f"  FAILED: {e!r}")
 

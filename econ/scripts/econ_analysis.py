@@ -29,6 +29,7 @@ from configs import (
     setup_logger,
     PROCESS_GND_FILES,
     get_data_dir,
+    IPOPT_EXEC,
 )
 
 from econ.scripts.l_prepr_data import load_gic_results
@@ -415,9 +416,7 @@ def run_policy(model_instance, policy_params, scenario_name="Policy Simulation")
             else:
                 logger.warning(f"Parameter {param_name} not found in model")
 
-    solver = SolverFactory(
-        "ipopt", executable="/home/pve_ubuntu/miniconda3/envs/spw-env/bin/ipopt"
-    )
+    solver = SolverFactory("ipopt", executable=IPOPT_EXEC)
     solver.options["max_iter"] = 5000
     solver.options["tol"] = 1e-6
 

@@ -5,6 +5,7 @@ Authors: Dennies Bor, Ed Oughton
 
 import os
 import sys
+import shutil
 import logging
 from pathlib import Path
 
@@ -41,9 +42,11 @@ P_TRAFO_BD = 0.01
 cut_off_volt = 160
 USE_OLD_SUB_DATA = True  # Use OSM data as of the Gannon storm
 
-IPOPT_EXEC = (
-    "/home/pve_ubuntu/miniconda3/envs/spw-env/bin/ipopt"  # Update for your system
-)
+# Resolve from PATH first (works unmodified on any machine/OS where ipopt is
+# installed in the active conda env, e.g. Windows' ...\Library\bin\ipopt.EXE);
+# fall back to the original hardcoded Linux path for environments where it
+# isn't on PATH but is known to live there.
+IPOPT_EXEC = shutil.which("ipopt") or "/home/pve_ubuntu/miniconda3/envs/spw-env/bin/ipopt"
 
 PROCESS_GND_FILES = False
 
