@@ -141,6 +141,18 @@ def main():
         allocate_total=True,
     )
 
+    # Dasymetric interpolation can lose mass at raster/mask edges (pixels the
+    # land mask drops, geometry clipped at the window boundary). Rescale each
+    # column back to the source ZCTA totals, same correction
+    # econ/scripts/l_prepr_data.py's load_and_aggregate_tiles() applies
+    # nationally across tiles — here it's a single correction since this is
+    # already one region, not a cross-tile aggregation.
+    for c in economic_cols:
+        target = float(zcta_aea[c].sum())
+        observed = float(result[c].sum())
+        if observed > 0 and target > 0:
+            result[c] *= target / observed
+
     out_path = VA_ECON_DIR / "va_substation_exposure.gpkg"
     result.to_file(out_path, driver="GPKG")
     logger.info(f"Saved {out_path}")
