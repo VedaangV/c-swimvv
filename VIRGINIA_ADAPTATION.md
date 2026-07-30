@@ -227,11 +227,46 @@ scripts/recompute_virginia_line_voltages.py Step 3b — VA+PJM line V recompute 
 scripts/run_virginia_admittance.py          Step 4 — VA+PJM admittance matrix + MC samples
 scripts/run_virginia_gic.py                 Step 5 — VA+PJM GIC Monte Carlo
 scripts/extract_virginia_results.py         Step 6 — filter GIC + econ ZCTAs to Virginia
+scripts/run_virginia_areal_interpolation.py Econ — VA substation-exposure Voronoi/dasymetric interpolation
+scripts/run_virginia_fragility.py           Econ — VA fragility Monte Carlo (effective GIC + vulnerability)
+scripts/run_virginia_econ_analysis.py       Econ — VA Ghosh/Leontief IO analysis ($/day results)
+viz/plot_virginia_network.py                Viz — VA+PJM EHV network map
+viz/plot_virginia_gic_risk.py               Viz — VA substation GIC risk map + ranking
+viz/plot_virginia_econ_impact.py            Viz — VA sector-level $/day impact bars (3 IO models)
 dc_blocker/README.md                        Placeholder — not implemented
 ```
 
 Outputs land under `data/virginia/` (gitignored, same as every other `data/`
 subdirectory) and `figures/virginia/`.
+
+## Visualization: substation naming and figure parity with the national report
+
+`scripts/build_admittance_matrix.py` renames each substation's `SS_ID`
+(itself just the raw OSM node/way `osmid`, since most PJM-region
+`power=substation` OSM features carry no `name` tag) to `name`, and every
+downstream file — `substation_info.csv`, the GIC CSVs, `va_gic_summary.csv`
+— inherits that as `sub_id`. The real OSM name, when one exists, survives
+only in `grid_processed/ss_df.pkl`'s `SS_NAME` column, which nothing joins
+back in for reporting. `viz/plot_virginia_gic_risk.py` now loads
+`ss_df.pkl` and labels each substation with `SS_NAME` when OSM has one,
+falling back to `"{operator} {voltage} substation ({lat}, {lon})"` or
+`"Unnamed substation ({lat}, {lon})"` otherwise — no code up the chain
+changes, since `sub_id` is still what every merge key is built from.
+
+Prior to this fix, Virginia had two figures (`va_pjm_network.png`,
+`va_gic_risk.png`) against the national report's much larger set (sector
+economic-impact bars, hazard maps, vulnerability maps, fragility panels,
+...). `viz/plot_virginia_econ_impact.py` closes the biggest gap: it mirrors
+`viz/plots.py`'s `plot_econo_naics()` layout and color palette (one panel
+per storm severity, direct+indirect stacked bars per sector) reading the
+three `scripts/run_virginia_econ_analysis.py` output CSVs directly, but
+plots in `$M/day` instead of the national script's hardcoded `Bn $/day` —
+Virginia's totals (tens to low hundreds of $M/day) would otherwise render
+as barely-visible slivers under the national scale. It does not call
+`plot_econo_naics()` itself for this reason, and inlines
+`viz/plot_utils.ECON_PALETTES`'s two color dicts rather than importing the
+module, since `plot_utils.py` pulls in `cartopy` for mapping functions this
+script never uses.
 
 ## Execution order
 
@@ -256,6 +291,11 @@ python scripts/extract_virginia_results.py
 python scripts/run_virginia_areal_interpolation.py
 python scripts/run_virginia_fragility.py               # expensive: sequential, likely the longest step
 python scripts/run_virginia_econ_analysis.py
+
+# Figures
+python viz/plot_virginia_network.py
+python viz/plot_virginia_gic_risk.py
+python viz/plot_virginia_econ_impact.py
 ```
 
 `configs/virginia_config.N_MONTE_CARLO` is set to 3000, matching the US
