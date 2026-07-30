@@ -171,12 +171,51 @@ full site set.
    interpolation (`tobler.dasymetric.masked_area_interpolate`, tiled
    `rasterio` reads over the national NLCD land-cover raster) to map
    economic exposure onto substation Voronoi cells — a real geospatial
-   subsystem, not more pandas. `scripts/_check_econ_pipeline_deps.py` checks
-   whether IPOPT, `pyomo`, `rasterio`/`tobler`, the NLCD raster, and the
-   SAM/technology CSVs are actually present and working before any of this
-   is worth writing code against — run it and share the output before
-   asking for the Virginia-scoped adaptation of `p_areal_intp.py`/
-   `econ_analysis.py`.
+   subsystem, not more pandas. `scripts/_check_econ_pipeline_deps.py`
+   confirmed IPOPT, `pyomo`, `rasterio`/`tobler`, the NLCD raster, and the
+   SAM/technology CSVs are all present and working on the reference machine.
+
+   **What's now built, three new scripts completing the chain (all
+   untested against real data — no rasterio/tobler/torch environment in
+   this session, so treat as needing at least one fix-and-rerun cycle like
+   every other new step has):**
+   - `scripts/run_virginia_areal_interpolation.py` — rebuilds the Voronoi
+     tessellation from Virginia+PJM's own substations (not the national
+     set) clipped to PJM's states (not all of CONUS — achieved by feeding
+     `create_voronoi_polygons()` a pre-filtered `states_gdf`, so its
+     CONUS-exclusion filter becomes a no-op and the union of what's left
+     *is* the PJM footprint), then runs `masked_area_interpolate()` once
+     over Virginia's own raster window (small enough to skip the national
+     pipeline's 64-tile chunking entirely) to map Virginia ZCTA economic
+     data onto Virginia substation service areas, with the same mass-loss
+     rescaling `l_prepr_data.load_and_aggregate_tiles()` applies nationally.
+   - `scripts/run_virginia_fragility.py` — reuses
+     `p_gic_files.py`'s `process_gic_file()`/`build_merged()`/
+     `_simulate_scenario()`/`process_all_files()` unmodified (via
+     monkeypatched `DATA_DIR`/`DATA_LOC`/`OUTPUT_FILES`) to convert every
+     Virginia GIC Monte Carlo realization into per-substation transformer
+     failure probabilities and exposure. Forced to `workers=1` rather than
+     the library's default `ProcessPoolExecutor` parallelization — that
+     uses Windows spawn, which would silently corrupt latitude/longitude in
+     the output by re-importing `p_gic_files` fresh (unpatched) in every
+     worker, the same failure mode fixed in
+     `recompute_virginia_line_voltages.py` but harder to notice here since
+     it wouldn't crash. Sequential is much slower but correct.
+   - `scripts/run_virginia_econ_analysis.py` — runs `econ_analysis.py`'s
+     Ghosh value-added and two Leontief shock models completely unmodified
+     against Virginia's fragility output. Only
+     `l_prepr_data.py`'s `DATA_LOC` is redirected (to read Virginia's
+     fragility batches); `econ_analysis.py`'s *own* `DATA_LOC` is
+     deliberately left pointed at the national tables, since
+     `_load_national_totals()` needs the true national population/GDP as
+     the denominator for "Virginia's share of the national economy" — that
+     ratio *is* the national-tables-plus-regional-shock design, not
+     something to redirect.
+
+   Does not touch `econ.models.cge_data_model`'s IPOPT-based CGE path —
+   `econ_analysis.py`'s own `main()` doesn't call it either; it's a
+   separate, more advanced model not needed for these three headline
+   analyses. The IPOPT path fixes still matter if that's ever exercised.
 
 ## Repository layout (this repo, not the Windows path in the original plan)
 
@@ -210,11 +249,18 @@ python scripts/recompute_virginia_line_voltages.py   # expensive: ~90 storms rec
 python scripts/run_virginia_admittance.py
 python scripts/run_virginia_gic.py                    # expensive: N_MONTE_CARLO iterations
 python scripts/extract_virginia_results.py
+
+# Economic impact chain (built but untested against real data as of this
+# writing — expect at least one fix-and-rerun cycle, same as every other
+# new step here has needed):
+python scripts/run_virginia_areal_interpolation.py
+python scripts/run_virginia_fragility.py               # expensive: sequential, likely the longest step
+python scripts/run_virginia_econ_analysis.py
 ```
 
-`configs/virginia_config.N_MONTE_CARLO` defaults to 500 (vs. 3000 for the US
-run) given the ASSIP timeline — confirm the final sample size with Dennies
-before treating results as final.
+`configs/virginia_config.N_MONTE_CARLO` is set to 3000, matching the US
+run's sample size, as of the first full run against real data — confirm
+this is the final number to report with Dennies.
 
 ## Open items for Dennies
 
