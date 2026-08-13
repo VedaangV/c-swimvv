@@ -4,10 +4,20 @@ scripts/extract_virginia_results.py's output.
 
 Produces a two-panel figure:
   left  — map of all Virginia substations sized/colored by mean 100-year
-          GIC, with the VA+PJM network lines as geographic context and the
-          top-vulnerability substations labeled
+          ground GIC, with the VA+PJM network lines as geographic context
+          and the top-vulnerability substations labeled
   right — horizontal bar chart of the top-N substations ranked by
-          100-year mean GIC, with 95th-percentile as an error bar
+          100-year mean ground GIC, with 95th-percentile as an error bar
+
+Ranks on *ground* GIC (va_ground_gic_summary.csv), not winding GIC
+(va_gic_summary.csv) -- ground GIC is the same physical quantity
+scripts/run_virginia_fragility.py's fragility Monte Carlo uses for the
+headline economic-impact results, and is already a single per-substation
+scalar rather than something assembled from several transformers' separate
+windings. See scripts/extract_virginia_results.py's summarize_ground_gic()
+for the full reasoning. Units are "A" (already combined across all three
+phases by solve_total_nodal_gic()'s *3 term), not winding GIC's "A/ph"
+(per-phase) convention -- don't copy that label over if editing this file.
 
 `sub_id` (used throughout scripts/extract_virginia_results.py) is the raw
 OSM-derived SS_ID string build_admittance_matrix.py assigns every
@@ -39,8 +49,8 @@ from configs.virginia_config import (
 
 logger = setup_logger(log_file="logs/plot_virginia_gic_risk.log")
 
-RANK_COL = "100-year-hazard A/ph_mean"
-RANK_COL_P95 = "100-year-hazard A/ph_p95"
+RANK_COL = "GIC_100_mean"
+RANK_COL_P95 = "GIC_100_p95"
 TOP_N_LABELED = 10
 TOP_N_BAR = 15
 
@@ -86,7 +96,7 @@ def _load_substation_labels() -> dict:
 def main():
     setup_matplotlib()
 
-    summary_path = VA_ECON_DIR / "va_gic_summary.csv"
+    summary_path = VA_ECON_DIR / "va_ground_gic_summary.csv"
     if not summary_path.exists():
         raise FileNotFoundError(f"Missing {summary_path}. Run scripts/extract_virginia_results.py first.")
 
@@ -132,7 +142,7 @@ def main():
         )
 
     cbar = fig.colorbar(sc, ax=ax_map, fraction=0.04, pad=0.02)
-    cbar.set_label("Mean 100-year GIC (A/ph)")
+    cbar.set_label("Mean 100-year ground GIC (A)")
     ax_map.set_title(f"Virginia substation GIC risk — {len(summary)} substations")
     ax_map.set_xlabel("Longitude")
     ax_map.set_ylabel("Latitude")
@@ -143,14 +153,14 @@ def main():
     ax_bar.barh(y, order[RANK_COL], xerr=errs, color="#d73027", ecolor="0.3", capsize=3)
     ax_bar.set_yticks(list(y))
     ax_bar.set_yticklabels(order["display_name"], fontsize=8)
-    ax_bar.set_xlabel("Mean 100-year GIC (A/ph), with p95 whisker")
+    ax_bar.set_xlabel("Mean 100-year ground GIC (A), with p95 whisker")
     ax_bar.set_title(f"Top {len(top)} most vulnerable VA substations")
 
     fig.tight_layout()
     out_path = VA_FIGURES_DIR / "va_gic_risk.png"
     fig.savefig(out_path, dpi=200, bbox_inches="tight")
     logger.info(f"Saved {out_path}")
-    logger.info(f"Top substation: {summary.iloc[0]['display_name']} ({summary.iloc[0][RANK_COL]:.2f} A/ph mean)")
+    logger.info(f"Top substation: {summary.iloc[0]['display_name']} ({summary.iloc[0][RANK_COL]:.2f} A mean)")
 
 
 if __name__ == "__main__":

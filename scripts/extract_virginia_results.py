@@ -75,7 +75,7 @@ def filter_winding_gic(va_boundary) -> pd.DataFrame:
     return va_gic
 
 
-def summarize_and_rank(va_gic: pd.DataFrame, top_n: int = 25) -> None:
+def summarize_and_rank(va_gic: pd.DataFrame) -> None:
     hazard_cols = [c for c in va_gic.columns if c.endswith("-year-hazard A/ph")]
     if not hazard_cols:
         logger.warning("No hazard columns found in Virginia GIC results.")
@@ -99,14 +99,11 @@ def summarize_and_rank(va_gic: pd.DataFrame, top_n: int = 25) -> None:
     summary = summary.join(meta).reset_index()
     summary.to_csv(VA_ECON_DIR / "va_gic_summary.csv", index=False)
     logger.info(f"Substation-level VA GIC summary: {len(summary)} substations")
-
-    rank_col = "100-year-hazard A/ph_mean"
-    if rank_col in summary.columns:
-        top = summary.sort_values(rank_col, ascending=False).head(top_n)
-        top.to_csv(VA_ECON_DIR / "va_top_substations.csv", index=False)
-        logger.info(f"Top {len(top)} most vulnerable VA substations -> va_top_substations.csv")
-    else:
-        logger.warning(f"'{rank_col}' not present; skipping vulnerability ranking.")
+    logger.info(
+        "Per-transformer-winding detail only -- va_top_substations.csv (the paper's "
+        "reported ranking) now comes from summarize_ground_gic(), not this function; "
+        "see that function's docstring for why."
+    )
 
 
 def filter_ground_gic(sub_lookup: pd.DataFrame) -> pd.DataFrame:
@@ -129,21 +126,35 @@ def filter_ground_gic(sub_lookup: pd.DataFrame) -> pd.DataFrame:
     return va_ground_gic
 
 
-def summarize_ground_gic(va_ground_gic: pd.DataFrame) -> None:
+def summarize_ground_gic(
+    va_ground_gic: pd.DataFrame, sub_lookup: pd.DataFrame, top_n: int = 25
+) -> None:
     """sub_id + mean/p95 ground-GIC magnitude per storm scenario, from
     va_ground_gic_results.csv -- the same underlying quantity (current to
     earth through the substation's grounding connection, Y_earth *
     V_nodal * 3, see scripts/est_gic.py's solve_total_nodal_gic()) that
     scripts/run_virginia_fragility.py's fragility Monte Carlo already uses
-    for the headline economic-impact results. Using it here too keeps the
-    SCI's risk signal consistent with what the rest of the pipeline calls
-    "GIC risk", rather than the per-winding current
-    summarize_and_rank() reports (useful for its own per-transformer
-    purpose, but a different physical quantity).
+    for the headline economic-impact results. Using it here too keeps
+    va_top_substations.csv, viz/plot_virginia_gic_risk.py, and the SCI all
+    agreeing on what "GIC risk" means, rather than the per-winding
+    current summarize_and_rank() reports separately (useful for its own
+    per-transformer purpose, but a different physical quantity, and no
+    longer the one used for the paper's reported ranking/figure).
 
     Still signed for the same reason winding GIC is -- V_nodal's sign
     depends on storm field direction -- so magnitude is taken here too,
     same as summarize_and_rank().
+
+    Note on units: solve_total_nodal_gic() multiplies by 3 to combine all
+    three phases, so this is already total current, not "amps per phase"
+    the way winding GIC's "A/ph" columns are. va_top_substations.csv and
+    the risk map should be labeled "A" here, not "A/ph".
+
+    va_ground_gic_results.csv itself has no latitude/longitude (unlike
+    va_gic_results.csv, whose per-winding rows get merged with
+    df_transformers' coordinates when scripts/run_virginia_gic.py writes
+    them) -- sub_lookup (already loaded in main() from
+    substation_info.csv) supplies them here instead.
     """
     gic_cols = [c for c in va_ground_gic.columns if c.startswith("GIC_")]
     if not gic_cols:
@@ -157,8 +168,26 @@ def summarize_ground_gic(va_ground_gic: pd.DataFrame) -> None:
     summary = grouped.mean().add_suffix("_mean")
     summary = summary.join(grouped.quantile(0.95).add_suffix("_p95"))
     summary = summary.reset_index().rename(columns={"Substation": "sub_id"})
+
+    coords = sub_lookup[["name", "latitude", "longitude"]].rename(columns={"name": "sub_id"})
+    summary = summary.merge(coords, on="sub_id", how="left")
+    missing_coords = summary["latitude"].isna().sum()
+    if missing_coords:
+        logger.warning(
+            f"{missing_coords} substations in the ground-GIC summary have no matching "
+            "coordinates in substation_info.csv -- check sub_id/name matching."
+        )
+
     summary.to_csv(VA_ECON_DIR / "va_ground_gic_summary.csv", index=False)
     logger.info(f"Substation-level VA ground-GIC summary: {len(summary)} substations")
+
+    rank_col = "GIC_100_mean"
+    if rank_col in summary.columns:
+        top = summary.sort_values(rank_col, ascending=False).head(top_n)
+        top.to_csv(VA_ECON_DIR / "va_top_substations.csv", index=False)
+        logger.info(f"Top {len(top)} most vulnerable VA substations -> va_top_substations.csv")
+    else:
+        logger.warning(f"'{rank_col}' not present; skipping vulnerability ranking.")
 
 
 def filter_socioeconomic_data(va_boundary) -> None:
@@ -220,7 +249,7 @@ def main():
     sub_lookup = _load_va_substation_lookup(va_boundary)
     va_ground_gic = filter_ground_gic(sub_lookup)
     if not va_ground_gic.empty:
-        summarize_ground_gic(va_ground_gic)
+        summarize_ground_gic(va_ground_gic, sub_lookup)
 
     filter_socioeconomic_data(va_boundary)
 
