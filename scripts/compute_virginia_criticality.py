@@ -15,11 +15,17 @@ eligible -- see ISLANDING_MITIGATION_PLAN.md's Phase 1 results for why (11
 Virginia substations sit outside the main connected component and can't be
 meaningfully ranked or islanded against a network they aren't part of here).
 
-TODO markers below are the parts left for you to implement. The file
-boilerplate (paths, column names, join keys) is wired up against what the
-earlier pipeline steps actually produce, verified against
-run_virginia_areal_interpolation.py and build_virginia_network_graph.py's
-real output -- so you shouldn't need to go rediscover those.
+Economic exposure is GDP + population (not establishment counts) -- decided
+to keep the exposure term aligned with the $/day and population-affected
+figures already reported elsewhere in the paper, rather than adding
+establishment counts that are highly correlated with GDP within a sector
+and would partly double-weight the same underlying signal.
+
+GDP and population are normalized *separately* before being averaged into
+one exposure score, not summed first -- GDP is in dollars (tens of
+millions) and population is in raw headcounts (hundreds of thousands); a
+pre-normalization sum would let population numerically dominate and the
+"economic exposure" term would really just be measuring population.
 
 Usage:
     python scripts/compute_virginia_criticality.py
@@ -39,9 +45,12 @@ logger = setup_logger(log_file="logs/compute_virginia_criticality.log")
 WEIGHTS = {"gic_risk": 1 / 3, "econ_exposure": 1 / 3, "betweenness": 1 / 3}
 
 RANK_COL = "100-year-hazard A/ph_mean"  # same column plot_virginia_gic_risk.py ranks on
-ECON_COLS = None  # TODO: which columns from va_substation_exposure.gpkg count as "exposure"?
-                  # (hint: GDP_* + POP20 + EST_* all exist -- decide whether EST_* double-counts
-                  # against GDP_* or adds independent signal, and document the choice)
+
+# Same sector taxonomy as run_virginia_areal_interpolation.py's GROUP_KEYS.
+GDP_SECTOR_KEYS = (
+    "AGR", "MINING", "UTIL_CONST", "MANUF", "TRADE_TRANSP",
+    "INFO", "FIRE", "PROF_OTHER", "EDUC_ENT", "G",
+)
 
 
 def load_topology_metrics() -> pd.DataFrame:
@@ -55,56 +64,92 @@ def load_topology_metrics() -> pd.DataFrame:
 
 
 def load_gic_risk() -> pd.DataFrame:
-    """sub_id, gic_risk -- from va_gic_summary.csv's 100yr mean GIC column.
-
-    TODO: read VA_ECON_DIR / "va_gic_summary.csv", pull out `RANK_COL`,
-    return a two-column frame (sub_id, gic_risk). Check extract_virginia_
-    results.py's summarize_and_rank() if you need to confirm the exact
-    column names available -- va_gic_summary.csv also has a "_p95" variant
-    per hazard column if you decide mean alone isn't the right signal.
-    """
-    raise NotImplementedError
+    """sub_id, gic_risk -- 100yr mean GIC from va_gic_summary.csv."""
+    path = VA_ECON_DIR / "va_gic_summary.csv"
+    if not path.exists():
+        raise FileNotFoundError(f"Missing {path}. Run scripts/extract_virginia_results.py first.")
+    df = pd.read_csv(path)
+    if RANK_COL not in df.columns:
+        raise ValueError(f"Expected column '{RANK_COL}' in {path}; got {list(df.columns)}")
+    df["sub_id"] = df["sub_id"].astype(str)
+    return df[["sub_id", RANK_COL]].rename(columns={RANK_COL: "gic_risk"})
 
 
 def load_economic_exposure() -> pd.DataFrame:
-    """sub_id, econ_exposure -- from va_substation_exposure.gpkg.
+    """sub_id, gdp_total, population -- from va_substation_exposure.gpkg.
 
-    TODO: read VA_ECON_DIR / "va_substation_exposure.gpkg" with
-    geopandas.read_file(), sum whichever columns you decided on in
-    ECON_COLS into one econ_exposure value per substation, return a
-    two-column frame (sub_id, econ_exposure). The file is indexed/keyed by
-    sub_id already (see run_virginia_areal_interpolation.py's
-    `vs = voronoi_aea.set_index("sub_id", drop=False)`).
+    Returns gdp_total and population as separate columns, deliberately not
+    summed -- see module docstring for why they need independent
+    normalization before being combined.
     """
-    raise NotImplementedError
+    path = VA_ECON_DIR / "va_substation_exposure.gpkg"
+    if not path.exists():
+        raise FileNotFoundError(f"Missing {path}. Run scripts/run_virginia_areal_interpolation.py first.")
+    gdf = gpd.read_file(path)
+    gdf["sub_id"] = gdf["sub_id"].astype(str)
+
+    gdp_cols = [f"GDP_{k}" for k in GDP_SECTOR_KEYS if f"GDP_{k}" in gdf.columns]
+    if not gdp_cols:
+        raise ValueError(f"No GDP_* columns found in {path}; got {list(gdf.columns)}")
+    if "POP20" not in gdf.columns:
+        raise ValueError(f"Expected POP20 column in {path}; got {list(gdf.columns)}")
+
+    gdf["gdp_total"] = gdf[gdp_cols].sum(axis=1)
+    return gdf[["sub_id", "gdp_total", "POP20"]].rename(columns={"POP20": "population"})
 
 
 def normalize_min_max(series: pd.Series) -> pd.Series:
-    """Scale a series to [0, 1]. TODO: implement.
-
-    Watch for the degenerate case where every value is identical
-    (max == min) -- decide what that should return rather than dividing by
-    zero, and note the choice.
-    """
-    raise NotImplementedError
+    """Scale to [0, 1]. If every value is identical, return 0.5 for all of
+    them -- "no variation" should read as "this signal has nothing to say
+    here," not as everyone scoring lowest on that term."""
+    lo, hi = series.min(), series.max()
+    if hi == lo:
+        return pd.Series(0.5, index=series.index)
+    return (series - lo) / (hi - lo)
 
 
 def compute_sci(topology: pd.DataFrame, gic: pd.DataFrame, econ: pd.DataFrame) -> pd.DataFrame:
-    """The actual index. TODO: implement.
+    eligible = topology[topology["in_main_component"]].copy()
+    excluded = len(topology) - len(eligible)
+    if excluded:
+        logger.info(f"Excluding {excluded} substations outside the main connected component from SCI ranking.")
 
-    Steps:
-    1. Filter `topology` to in_main_component == True.
-    2. Join topology, gic, econ on sub_id (decide: inner join, or left join
-       from topology with missing values filled/logged? A substation
-       missing from one of the three sources is worth knowing about, not
-       silently excluding).
-    3. Normalize each of the three raw columns with normalize_min_max().
-    4. Combine via WEIGHTS into one `SCI` column.
-    5. Return a DataFrame with sub_id, the three raw values, the three
-       normalized values, and SCI -- keep the intermediate columns rather
-       than only the final score, so the ranking is auditable later.
-    """
-    raise NotImplementedError
+    merged = eligible.merge(gic, on="sub_id", how="left").merge(econ, on="sub_id", how="left")
+
+    missing_gic = merged["gic_risk"].isna().sum()
+    missing_econ = merged[["gdp_total", "population"]].isna().any(axis=1).sum()
+    if missing_gic:
+        logger.warning(
+            f"{missing_gic} eligible substations have no GIC risk data -- check sub_id "
+            "matching between va_topology_metrics.csv and va_gic_summary.csv."
+        )
+    if missing_econ:
+        logger.warning(
+            f"{missing_econ} eligible substations have no economic exposure data -- check "
+            "sub_id matching with va_substation_exposure.gpkg."
+        )
+    merged[["gic_risk", "gdp_total", "population"]] = merged[
+        ["gic_risk", "gdp_total", "population"]
+    ].fillna(0)
+
+    merged["gic_risk_norm"] = normalize_min_max(merged["gic_risk"])
+    merged["gdp_norm"] = normalize_min_max(merged["gdp_total"])
+    merged["population_norm"] = normalize_min_max(merged["population"])
+    merged["econ_exposure_norm"] = (merged["gdp_norm"] + merged["population_norm"]) / 2
+    merged["betweenness_norm"] = normalize_min_max(merged["betweenness"])
+
+    merged["SCI"] = (
+        WEIGHTS["gic_risk"] * merged["gic_risk_norm"]
+        + WEIGHTS["econ_exposure"] * merged["econ_exposure_norm"]
+        + WEIGHTS["betweenness"] * merged["betweenness_norm"]
+    )
+
+    return merged[
+        [
+            "sub_id", "gic_risk", "gdp_total", "population", "betweenness",
+            "gic_risk_norm", "econ_exposure_norm", "betweenness_norm", "SCI",
+        ]
+    ]
 
 
 def main():
