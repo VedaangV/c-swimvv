@@ -22,18 +22,29 @@ always findable/reliable:
    same project) for substations -- duplicated here rather than imported,
    matching this project's existing convention (see virginia_config.py's
    TRAFO_WINDING_R comment) of keeping Virginia-side scripts independent of
-   each other rather than cross-importing small constants. Hospitals moved
-   here after HIFLD Open's Hospitals dataset turned out to no longer be
-   public (DHS restricted several HIFLD Open layers, hospitals included, to
-   HIFLD Secure/agency-only access) -- confirmed by hand-searching
-   hub.arcgis.com and finding nothing. OSM's amenity=hospital tag is
-   near-universally applied since navigation apps depend on it.
+   each other rather than cross-importing small constants.
+
+   - Hospitals moved here after HIFLD Open's Hospitals dataset turned out
+     to no longer be public (DHS restricted several HIFLD Open layers,
+     hospitals included, to HIFLD Secure/agency-only access) -- confirmed
+     by hand-searching hub.arcgis.com and finding nothing. OSM's
+     amenity=hospital tag is near-universally applied since navigation
+     apps depend on it.
+   - Data centers moved here after Loudoun County's GeoHub turned out not
+     to carry a data-center dataset either (only an ArcGIS Hub
+     "Experience" map with no discoverable underlying FeatureServer URL).
+     OSM's telecom=data_center tag exists and NoVA's major named
+     facilities (Equinix, Digital Realty, etc.) are prominent enough that
+     some are mapped, but coverage here is expected to be less complete
+     than hospitals -- some operators deliberately avoid being mapped.
+     Worth sanity-checking the fetched count against known public counts
+     of Loudoun-area data centers before trusting it as a real census.
 
 3. CRITICAL_LOAD_LOCAL_SOURCES: category -> filename stem, for a file
-   downloaded by hand. Currently just data centers -- Loudoun County's
-   data-center layer is wrapped in an ArcGIS Hub "Experience" app with no
-   directly discoverable FeatureServer URL, and isn't the kind of thing
-   OSM crowd-mapping reliably covers (many are deliberately low-profile).
+   downloaded by hand. Empty for now -- both categories that once needed
+   this (hospitals, data centers) moved to the OSM path above once their
+   original API/portal leads dead-ended. Kept in place, tested, and
+   documented since a future category may still need it.
 
    To add a local-file category: download the dataset yourself, save it
    under CRITICAL_LOAD_LOCAL_DIR as "<stem>.geojson"/".json"/".csv", and
@@ -41,11 +52,6 @@ always findable/reliable:
    the loader auto-detects point geometry (GeoJSON/JSON) or a lat/lon
    column pair (CSV, matched case-insensitively against a small set of
    common names) and filters to Virginia the same way the other paths do.
-
-   Where to get data centers: https://geohub-loudoungis.opendata.arcgis.com
-   -> search "data center" -> open the dataset page -> Download -> GeoJSON
-   (or CSV if GeoJSON isn't offered). Save as
-   data/virginia/network/raw_critical_loads/data_centers.geojson (or .csv).
 
 Usage:
     python scripts/fetch_virginia_critical_loads.py
@@ -82,15 +88,15 @@ OVERPASS_USER_AGENT = "c-swim-virginia-adaptation/1.0 (+https://github.com/Vedaa
 # category -> Overpass QL tag filter (without brackets), fetched live via
 # Overpass across node/way/relation.
 CRITICAL_LOAD_OSM_SOURCES = {
-    "hospital": 'amenity=hospital',
+    "hospital": "amenity=hospital",
+    "data_center": "telecom=data_center",
 }
 
 # category -> filename stem for a manually-downloaded file. See module
-# docstring for exactly where to download each one from.
+# docstring for exactly where to download each one from. Empty for now --
+# see point 3 in the module docstring.
 CRITICAL_LOAD_LOCAL_DIR = VA_NETWORK_DIR / "raw_critical_loads"
-CRITICAL_LOAD_LOCAL_SOURCES = {
-    "data_center": "data_centers",
-}
+CRITICAL_LOAD_LOCAL_SOURCES = {}
 
 # Matched case-insensitively against a local CSV's column names, in order,
 # to auto-detect coordinates when the schema isn't known in advance.
