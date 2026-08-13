@@ -81,7 +81,18 @@ def summarize_and_rank(va_gic: pd.DataFrame, top_n: int = 25) -> None:
         logger.warning("No hazard columns found in Virginia GIC results.")
         return
 
-    grouped = va_gic.groupby("sub_id")[hazard_cols]
+    # Winding GIC is a signed quantity -- (V_bus1 - V_neutral) * Y_winding,
+    # see scripts/est_gic.py's calc_trafo_gic() -- whose sign depends on
+    # storm field direction and which winding (HV/LV/Series/Common) is
+    # being measured, not on how large the current actually is. Averaging
+    # the signed value directly can cancel out real magnitude: a
+    # substation with consistently large but direction-varying current
+    # could average out near zero (or even negative), understating its
+    # actual risk. Rank on magnitude (|GIC|) instead of signed value.
+    va_gic_abs = va_gic.copy()
+    va_gic_abs[hazard_cols] = va_gic_abs[hazard_cols].abs()
+
+    grouped = va_gic_abs.groupby("sub_id")[hazard_cols]
     summary = grouped.mean().add_suffix("_mean")
     summary = summary.join(grouped.quantile(0.95).add_suffix("_p95"))
     meta = va_gic.groupby("sub_id")[["latitude", "longitude"]].first()
