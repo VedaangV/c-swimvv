@@ -9,39 +9,43 @@ THIS PIPELINE WAS DEVELOPED IN. That sandbox's network-egress policy blocks
 every ArcGIS/GIS-hosting domain outright (confirmed directly), so none of
 the URLs below could be verified from there.
 
-Two ingestion paths, per category, since a live-queryable API isn't always
-findable/reliable:
+Three ingestion paths, per category, since a live-queryable API isn't
+always findable/reliable:
 
 1. CRITICAL_LOAD_API_SOURCES: category -> ArcGIS FeatureServer query URL,
    fetched live via requests. Currently just wastewater treatment plants
    (an EPA-hosted layer that worked on the first real run).
 
-2. CRITICAL_LOAD_LOCAL_SOURCES: category -> filename stem. Hospitals and
-   data centers moved here after the API guesses either came back empty
-   (hospitals: the FeatureServer URL found via search returned 0 features
-   on a real run -- likely wrong layer/service, and guessing another blind
-   URL wasn't a good use of another round-trip) or never had a candidate
-   API in the first place (data centers: Loudoun County's data-center
-   layer is wrapped in an ArcGIS Hub "Experience" app with no directly
-   discoverable FeatureServer URL).
+2. CRITICAL_LOAD_OSM_SOURCES: category -> Overpass QL tag filter, fetched
+   live via the same OVERPASS_SERVERS/retry pattern
+   scripts/build_virginia_network.py already uses (successfully, on this
+   same project) for substations -- duplicated here rather than imported,
+   matching this project's existing convention (see virginia_config.py's
+   TRAFO_WINDING_R comment) of keeping Virginia-side scripts independent of
+   each other rather than cross-importing small constants. Hospitals moved
+   here after HIFLD Open's Hospitals dataset turned out to no longer be
+   public (DHS restricted several HIFLD Open layers, hospitals included, to
+   HIFLD Secure/agency-only access) -- confirmed by hand-searching
+   hub.arcgis.com and finding nothing. OSM's amenity=hospital tag is
+   near-universally applied since navigation apps depend on it.
 
-   To add a category here: download the dataset yourself (see below), save
-   it under CRITICAL_LOAD_LOCAL_DIR as "<stem>.geojson"/".json"/".csv", and
+3. CRITICAL_LOAD_LOCAL_SOURCES: category -> filename stem, for a file
+   downloaded by hand. Currently just data centers -- Loudoun County's
+   data-center layer is wrapped in an ArcGIS Hub "Experience" app with no
+   directly discoverable FeatureServer URL, and isn't the kind of thing
+   OSM crowd-mapping reliably covers (many are deliberately low-profile).
+
+   To add a local-file category: download the dataset yourself, save it
+   under CRITICAL_LOAD_LOCAL_DIR as "<stem>.geojson"/".json"/".csv", and
    list it in CRITICAL_LOAD_LOCAL_SOURCES. No other code changes needed --
    the loader auto-detects point geometry (GeoJSON/JSON) or a lat/lon
    column pair (CSV, matched case-insensitively against a small set of
-   common names) and filters to Virginia the same way the API path does.
+   common names) and filters to Virginia the same way the other paths do.
 
-   Where to get them:
-   - Hospitals: https://hifld-geoplatform.opendata.arcgis.com/datasets/hospitals
-     -> Download -> GeoJSON. This is the full national dataset (~7000
-     rows); that's fine, the Virginia-boundary filter below trims it down
-     the same way the API path's bbox query would have.
-   - Data centers: https://geohub-loudoungis.opendata.arcgis.com -> search
-     "data center" -> open the dataset page -> Download -> GeoJSON (or CSV
-     if GeoJSON isn't offered).
-   Save as data/virginia/network/raw_critical_loads/hospitals.geojson and
-   .../data_centers.geojson (or .csv) respectively.
+   Where to get data centers: https://geohub-loudoungis.opendata.arcgis.com
+   -> search "data center" -> open the dataset page -> Download -> GeoJSON
+   (or CSV if GeoJSON isn't offered). Save as
+   data/virginia/network/raw_critical_loads/data_centers.geojson (or .csv).
 
 Usage:
     python scripts/fetch_virginia_critical_loads.py
@@ -66,11 +70,25 @@ CRITICAL_LOAD_API_SOURCES = {
     "wastewater_treatment_plant": "https://services.arcgis.com/XG15cJAlne2vxtgt/ArcGIS/rest/services/wastewater_treatment_plants_epa_frs/FeatureServer/0/query",
 }
 
+# Same servers/UA as build_virginia_network.py's OVERPASS_SERVERS --
+# overpass.openstreetmap.ru dropped there for being unreachable from the
+# reference machine; kept consistent here rather than re-discovering that.
+OVERPASS_SERVERS = [
+    "https://overpass-api.de/api/interpreter",
+    "https://overpass.kumi.systems/api/interpreter",
+]
+OVERPASS_USER_AGENT = "c-swim-virginia-adaptation/1.0 (+https://github.com/VedaangV/c-swimvv)"
+
+# category -> Overpass QL tag filter (without brackets), fetched live via
+# Overpass across node/way/relation.
+CRITICAL_LOAD_OSM_SOURCES = {
+    "hospital": 'amenity=hospital',
+}
+
 # category -> filename stem for a manually-downloaded file. See module
 # docstring for exactly where to download each one from.
 CRITICAL_LOAD_LOCAL_DIR = VA_NETWORK_DIR / "raw_critical_loads"
 CRITICAL_LOAD_LOCAL_SOURCES = {
-    "hospital": "hospitals",
     "data_center": "data_centers",
 }
 
@@ -185,6 +203,69 @@ def _fetch_category(category: str, query_url: str, bbox: tuple, retries: int = 3
     return pd.DataFrame(rows)
 
 
+def _query_overpass(query: str, timeout: int = 120, retries: int = 2) -> dict | None:
+    """POST an Overpass query, trying each server in OVERPASS_SERVERS in
+    turn -- same pattern as build_virginia_network.py's _query_overpass()
+    (public instances reject requests without a real User-Agent)."""
+    headers = {"User-Agent": OVERPASS_USER_AGENT}
+    for url in OVERPASS_SERVERS:
+        for attempt in range(retries):
+            try:
+                r = requests.post(url, data={"data": query}, headers=headers, timeout=timeout + 30)
+                if r.status_code == 200:
+                    return r.json()
+                logger.warning(
+                    f"Overpass {url} (attempt {attempt + 1}/{retries}) -> "
+                    f"HTTP {r.status_code}: {r.text[:300]!r}"
+                )
+            except Exception as e:
+                logger.warning(f"Overpass {url} (attempt {attempt + 1}/{retries}) -> {e!r}")
+            time.sleep(3 * (attempt + 1))
+    logger.error(f"All Overpass servers failed for this query (first 120 chars: {query.strip()[:120]!r})")
+    return None
+
+
+def _fetch_osm_category(category: str, tag_filter: str, bbox: tuple) -> pd.DataFrame:
+    """Query Overpass for node/way/relation elements matching tag_filter
+    (e.g. 'amenity=hospital') inside bbox (minx, miny, maxx, maxy in
+    EPSG:4326). Uses `out center;` uniformly so every element type yields a
+    single lat/lon: nodes report their own coordinates as the "center" of a
+    zero-size element, ways/relations report their centroid."""
+    minx, miny, maxx, maxy = bbox
+    tag_key, tag_value = tag_filter.split("=", 1)
+    tag_expr = f'["{tag_key}"="{tag_value}"]'
+    query = f"""
+    [out:json][timeout:90][bbox:{miny},{minx},{maxy},{maxx}];
+    (
+      node{tag_expr};
+      way{tag_expr};
+      relation{tag_expr};
+    );
+    out center;
+    """
+    data = _query_overpass(query)
+    if not data or not data.get("elements"):
+        logger.warning(f"{category}: 0 features from Overpass -- see module docstring / logged errors above.")
+        return pd.DataFrame(columns=["category", "name", "latitude", "longitude"])
+
+    rows = []
+    for el in data["elements"]:
+        if el.get("type") == "node":
+            lat, lon = el.get("lat"), el.get("lon")
+        else:
+            center = el.get("center")
+            if not center:
+                continue
+            lat, lon = center.get("lat"), center.get("lon")
+        if lat is None or lon is None:
+            continue
+        name = (el.get("tags") or {}).get("name")
+        rows.append({"category": category, "name": name, "latitude": lat, "longitude": lon})
+
+    logger.info(f"{category}: fetched {len(rows)} raw point features from Overpass within the query bbox.")
+    return pd.DataFrame(rows)
+
+
 def _find_col(columns, candidates) -> str | None:
     lower = {str(c).lower(): c for c in columns}
     for cand in candidates:
@@ -263,6 +344,15 @@ def fetch_and_filter_to_virginia() -> pd.DataFrame:
         logger.info(f"{category}: {len(df)} inside Virginia's precise boundary.")
         all_rows.append(df)
 
+    for category, tag_filter in CRITICAL_LOAD_OSM_SOURCES.items():
+        df = _fetch_osm_category(category, tag_filter, (minx, miny, maxx, maxy))
+        if df.empty:
+            continue
+        in_va = df.apply(lambda r: va_boundary.contains(Point(r["longitude"], r["latitude"])), axis=1)
+        df = df[in_va].copy()
+        logger.info(f"{category}: {len(df)} inside Virginia's precise boundary.")
+        all_rows.append(df)
+
     for category, stem in CRITICAL_LOAD_LOCAL_SOURCES.items():
         df = _load_local_category(category, stem)
         if df.empty:
@@ -275,8 +365,8 @@ def fetch_and_filter_to_virginia() -> pd.DataFrame:
     if not all_rows:
         raise RuntimeError(
             "No critical-facility category returned any Virginia records. Check "
-            "CRITICAL_LOAD_API_SOURCES URLs and CRITICAL_LOAD_LOCAL_SOURCES files "
-            "-- see this script's module docstring."
+            "CRITICAL_LOAD_API_SOURCES URLs, CRITICAL_LOAD_OSM_SOURCES tags, and "
+            "CRITICAL_LOAD_LOCAL_SOURCES files -- see this script's module docstring."
         )
     return pd.concat(all_rows, ignore_index=True)
 
