@@ -6,9 +6,18 @@ into one ranked score per substation:
 
     SCI_i = w_e * norm(GIC_risk_i) + w_x * norm(econ_exposure_i) + w_t * norm(betweenness_i)
 
-- GIC_risk_i        <- va_gic_summary.csv           (scripts/extract_virginia_results.py)
+- GIC_risk_i        <- va_ground_gic_summary.csv    (scripts/extract_virginia_results.py)
 - econ_exposure_i   <- va_substation_exposure.gpkg  (scripts/run_virginia_areal_interpolation.py)
 - betweenness_i     <- va_topology_metrics.csv      (scripts/build_virginia_network_graph.py)
+
+GIC risk uses *ground* GIC (current to earth through the substation's
+grounding connection), not winding GIC (current through one transformer
+winding) -- ground GIC is the same physical quantity
+scripts/run_virginia_fragility.py's fragility Monte Carlo already uses for
+the headline economic-impact results, and it's already a single per-
+substation scalar rather than something assembled by combining multiple
+transformers'/windings' separately-signed values. See extract_virginia_
+results.py's summarize_ground_gic() for the full reasoning.
 
 Eligibility requires both in_main_component=True (see ISLANDING_MITIGATION_
 PLAN.md's Phase 1 results -- 11 Virginia substations sit outside the main
@@ -59,7 +68,7 @@ logger = setup_logger(log_file="logs/compute_virginia_criticality.log")
 # just present one weight choice as ground truth.
 WEIGHTS = {"gic_risk": 1 / 3, "econ_exposure": 1 / 3, "betweenness": 1 / 3}
 
-RANK_COL = "100-year-hazard A/ph_mean"  # same column plot_virginia_gic_risk.py ranks on
+RANK_COL = "GIC_100_mean"  # 100yr ground-GIC magnitude, from va_ground_gic_summary.csv
 
 # Same sector taxonomy as run_virginia_areal_interpolation.py's GROUP_KEYS.
 GDP_SECTOR_KEYS = (
@@ -82,10 +91,17 @@ def load_topology_metrics() -> pd.DataFrame:
 
 
 def load_gic_risk() -> pd.DataFrame:
-    """sub_id, gic_risk -- 100yr mean GIC from va_gic_summary.csv."""
-    path = VA_ECON_DIR / "va_gic_summary.csv"
+    """sub_id, gic_risk -- 100yr mean |ground GIC| from
+    va_ground_gic_summary.csv (scripts/extract_virginia_results.py's
+    summarize_ground_gic()), the same physical quantity the fragility
+    Monte Carlo uses. Not va_gic_summary.csv's winding-GIC ranking, which
+    is a different per-transformer quantity -- see module docstring."""
+    path = VA_ECON_DIR / "va_ground_gic_summary.csv"
     if not path.exists():
-        raise FileNotFoundError(f"Missing {path}. Run scripts/extract_virginia_results.py first.")
+        raise FileNotFoundError(
+            f"Missing {path}. Run scripts/extract_virginia_results.py first "
+            "(needs the ground_gic*.csv files scripts/run_virginia_gic.py produces)."
+        )
     df = pd.read_csv(path)
     if RANK_COL not in df.columns:
         raise ValueError(f"Expected column '{RANK_COL}' in {path}; got {list(df.columns)}")

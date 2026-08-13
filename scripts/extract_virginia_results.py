@@ -109,11 +109,11 @@ def summarize_and_rank(va_gic: pd.DataFrame, top_n: int = 25) -> None:
         logger.warning(f"'{rank_col}' not present; skipping vulnerability ranking.")
 
 
-def filter_ground_gic(sub_lookup: pd.DataFrame) -> None:
+def filter_ground_gic(sub_lookup: pd.DataFrame) -> pd.DataFrame:
     files = sorted(glob(str(VA_GND_GIC_DIR / "ground_gic*.csv")))
     if not files:
         logger.warning(f"No ground_gic*.csv under {VA_GND_GIC_DIR}; skipping.")
-        return
+        return pd.DataFrame()
 
     va_names = set(sub_lookup.loc[sub_lookup["in_virginia"], "name"])
     frames = []
@@ -126,6 +126,39 @@ def filter_ground_gic(sub_lookup: pd.DataFrame) -> None:
     va_ground_gic = pd.concat(frames, ignore_index=True)
     va_ground_gic.to_csv(VA_ECON_DIR / "va_ground_gic_results.csv", index=False)
     logger.info(f"Virginia ground-GIC rows: {len(va_ground_gic)} across {len(files)} files")
+    return va_ground_gic
+
+
+def summarize_ground_gic(va_ground_gic: pd.DataFrame) -> None:
+    """sub_id + mean/p95 ground-GIC magnitude per storm scenario, from
+    va_ground_gic_results.csv -- the same underlying quantity (current to
+    earth through the substation's grounding connection, Y_earth *
+    V_nodal * 3, see scripts/est_gic.py's solve_total_nodal_gic()) that
+    scripts/run_virginia_fragility.py's fragility Monte Carlo already uses
+    for the headline economic-impact results. Using it here too keeps the
+    SCI's risk signal consistent with what the rest of the pipeline calls
+    "GIC risk", rather than the per-winding current
+    summarize_and_rank() reports (useful for its own per-transformer
+    purpose, but a different physical quantity).
+
+    Still signed for the same reason winding GIC is -- V_nodal's sign
+    depends on storm field direction -- so magnitude is taken here too,
+    same as summarize_and_rank().
+    """
+    gic_cols = [c for c in va_ground_gic.columns if c.startswith("GIC_")]
+    if not gic_cols:
+        logger.warning("No GIC_* columns found in Virginia ground-GIC results.")
+        return
+
+    va_ground_gic_abs = va_ground_gic.copy()
+    va_ground_gic_abs[gic_cols] = va_ground_gic_abs[gic_cols].abs()
+
+    grouped = va_ground_gic_abs.groupby("Substation")[gic_cols]
+    summary = grouped.mean().add_suffix("_mean")
+    summary = summary.join(grouped.quantile(0.95).add_suffix("_p95"))
+    summary = summary.reset_index().rename(columns={"Substation": "sub_id"})
+    summary.to_csv(VA_ECON_DIR / "va_ground_gic_summary.csv", index=False)
+    logger.info(f"Substation-level VA ground-GIC summary: {len(summary)} substations")
 
 
 def filter_socioeconomic_data(va_boundary) -> None:
@@ -185,7 +218,9 @@ def main():
     summarize_and_rank(va_gic)
 
     sub_lookup = _load_va_substation_lookup(va_boundary)
-    filter_ground_gic(sub_lookup)
+    va_ground_gic = filter_ground_gic(sub_lookup)
+    if not va_ground_gic.empty:
+        summarize_ground_gic(va_ground_gic)
 
     filter_socioeconomic_data(va_boundary)
 
