@@ -73,29 +73,58 @@ to [0, 1]:
 SCI_i = w_e * norm(GIC_risk_i) + w_x * norm(econ_exposure_i) + w_t * norm(betweenness_i) [+ w_c * norm(critical_load_i)]
 ```
 
-- `GIC_risk_i`: 100-year mean GIC from `va_gic_summary.csv`'s
-  `100-year-hazard A/ph_mean` column (same column `plot_virginia_gic_risk.py`
-  already ranks on, for consistency with existing figures).
-- `econ_exposure_i`: sum of `GDP_*` columns + `POP20` from the areal
-  interpolation output (`run_virginia_areal_interpolation.py`'s
-  `aggregate_gdf`).
+- `GIC_risk_i`: 100-year mean **ground** GIC from `va_ground_gic_summary.csv`'s
+  `GIC_100_mean` column. (Originally planned as winding GIC from
+  `va_gic_summary.csv`'s `100-year-hazard A/ph_mean` column — switched during
+  implementation; see "Result" below.)
+- `econ_exposure_i`: GDP + population, normalized separately then averaged
+  (not establishment counts — see the script's module docstring for why).
+  Sourced from the areal interpolation output
+  (`run_virginia_areal_interpolation.py`'s `aggregate_gdf`).
 - `betweenness_i`: from Phase 1's `va_topology_metrics.csv`.
-- `critical_load_i` (Phase 3b, optional): binary/weighted flag from external
+- `critical_load_i` (Phase 2b, optional): binary/weighted flag from external
   critical-facility data.
 - Default weights: equal (1/3 each, or 1/4 with critical_load included).
   Treat weight choice as an explicit modeling assumption — worth a brief
   sensitivity check (e.g., report SCI rankings under 2-3 weight sets) in the
   same spirit as the NZ paper's four-method robustness comparison, not a
-  single hardcoded number presented as ground truth.
+  single hardcoded number presented as ground truth. Not yet done — still
+  open for Phase 7.
 
 Output: `data/virginia/econ/va_substation_criticality.csv`
-(SS_ID, SCI, and each component score, for transparency).
+(sub_id, SCI, and each component score, for transparency).
 
 **New file: `viz/plot_virginia_criticality.py`** — ranked map figure, styled
-consistently with `plot_virginia_gic_risk.py`.
+consistently with `plot_virginia_gic_risk.py`. **Not yet built** — deferred
+to Phase 7 alongside the other figures.
 
-This phase alone is a complete, defensible deliverable even if nothing past
-it finishes in time.
+**Result (as run against real VA+PJM data)**: 413 Virginia substations
+identified (2624 total − 2211 non-Virginia, matching Phase 1's known
+in-state count); 402 eligible after excluding the 11 main-component orphans
+documented in Phase 1. No missing-data warnings — every eligible substation
+resolved both a GIC risk value and an economic exposure value, confirming
+the Virginia-scoping fix lines up `va_topology_metrics.csv` (unfiltered) with
+`va_ground_gic_summary.csv`/`va_substation_exposure.gpkg` (Virginia-only).
+Top-ranked substation (`708152212`, gic_risk=844.71 A) hand-verified against
+the SCI formula: `(1.0 + 0.037398 + 0.472921) / 3 = 0.503440`, exact match to
+the script's output.
+
+The GIC signal was switched from winding GIC to ground GIC partway through
+implementation, for two compounding reasons surfaced while validating this
+phase's output: (1) both are signed quantities, and averaging signed values
+without taking `abs()` first can rank a substation with large but
+direction-varying current as *safer* than one with small but consistent
+current — a real bug, fixed by taking `abs()` before averaging in
+`extract_virginia_results.py` for both signals; (2) even after that fix,
+ground GIC is the more defensible choice on physical-consistency grounds —
+it's the same quantity the already-validated national fragility Monte Carlo
+uses for the headline $/day figures, and it's a single scalar per substation
+per realization rather than something assembled by combining several
+transformers' separately-signed windings. `va_top_substations.csv` and
+`viz/plot_virginia_gic_risk.py`'s risk map were updated to match, so the SCI,
+the top-15 table, and the risk map all now rank on the same signal.
+
+**Phase 2 complete.**
 
 ## Phase 2b — Critical-load data (Day 4, droppable)
 
