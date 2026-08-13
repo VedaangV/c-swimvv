@@ -62,6 +62,9 @@ dependencies:
   # - cudnn  # GPU support
   - scikit-learn
   - powerlaw
+
+  # Graph & Network Analysis
+  - networkx
   
   # Parallel & Distributed Computing
   - dask-core
