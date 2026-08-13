@@ -44,8 +44,10 @@ from collections import defaultdict
 import pandas as pd
 import networkx as nx
 
+from shapely.geometry import Point
+
 from configs import setup_logger
-from configs.virginia_config import VA_ADMITTANCE_DIR, VA_NETWORK_DIR
+from configs.virginia_config import VA_ADMITTANCE_DIR, VA_NETWORK_DIR, get_virginia_boundary
 
 logger = setup_logger(log_file="logs/build_virginia_network_graph.log")
 
@@ -129,18 +131,47 @@ def build_graph() -> nx.Graph:
     return G
 
 
+def _log_orphan_va_membership(G: nx.Graph, orphans: set) -> None:
+    """Of the substations outside the main connected component, how many
+    are actually inside Virginia? PJM spans 13 states, so an orphan being
+    out-of-state is a much smaller concern (edge-of-region data coverage)
+    than an orphan sitting inside Virginia (a substation the SCI/islanding
+    work would silently exclude)."""
+    try:
+        va_boundary = get_virginia_boundary()
+    except Exception as e:
+        logger.warning(f"Could not load Virginia boundary to check orphan substations: {e!r}")
+        return
+
+    va_orphans = []
+    for node in orphans:
+        lat = G.nodes[node].get("latitude")
+        lon = G.nodes[node].get("longitude")
+        if lat is None or lon is None:
+            continue
+        if va_boundary.contains(Point(lon, lat)):
+            va_orphans.append(node)
+
+    logger.info(
+        f"{len(va_orphans)}/{len(orphans)} out-of-main-component substations are "
+        f"inside Virginia: {va_orphans}"
+    )
+
+
 def compute_topology_metrics(G: nx.Graph) -> pd.DataFrame:
     components = list(nx.connected_components(G))
     components.sort(key=len, reverse=True)
     main_component = components[0] if components else set()
     if len(components) > 1:
         sizes = [len(c) for c in components]
+        orphans = set().union(*components[1:]) if len(components) > 1 else set()
         logger.warning(
             f"Graph has {len(components)} connected components (sizes {sizes}). "
             "Substations outside the main component are flagged, not dropped -- "
             "they can't be meaningfully centrality-ranked or islanded against the "
             "rest of the network, so exclude them at the SCI/islanding step, not here."
         )
+        _log_orphan_va_membership(G, orphans)
     else:
         logger.info("Graph is fully connected: 1 component.")
 
