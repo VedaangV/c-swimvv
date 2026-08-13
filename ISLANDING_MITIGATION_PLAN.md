@@ -22,29 +22,45 @@ to cut if behind schedule.
 
 **New file: `scripts/build_virginia_network_graph.py`**
 
-Build a `networkx.Graph` from the same bus-branch structures the
-admittance-matrix solve already uses — `substation_buses.pkl`,
-`bus_ids_map.pkl`, `sub_look_up.pkl` under `VA_ADMITTANCE_DIR` — rather than
-the raw `va_pjm_lines.geojson`/`va_pjm_substations.geojson`, so the graph's
-topology matches what's actually electrically solved (no dangling nodes or
-geometry artifacts that don't correspond to real electrical connectivity).
+Build a `networkx.Graph` from `run_virginia_admittance.py`'s own output --
+`substation_info.csv`'s `buses` column (bus indices per substation, already
+remapped through `bus_ids_map` at write time) and `transmission_lines.csv`'s
+`from_bus`/`to_bus` (same remapped bus-index space) -- rather than the raw
+`va_pjm_lines.geojson`/`va_pjm_substations.geojson`, so the graph's topology
+matches what's actually electrically solved. Doesn't need to touch the raw
+`substation_buses.pkl`/`bus_ids_map.pkl`/`sub_look_up.pkl` pickles directly.
 
-- Nodes: substations (`SS_ID`), attributed with lat/lon.
-- Edges: transmission lines between substations, attributed with voltage and
-  resistance (available in `transmission_lines.csv`).
-- Compute and attach as node attributes: betweenness centrality, degree,
-  articulation-point flag (`networkx.articulation_points`).
-- Handle disconnected components explicitly — log and flag any substations
-  outside the main PJM-connected component; they can't be graph-partitioned
-  meaningfully and should be excluded from SCI ranking with a note, not
-  silently dropped.
-- Output: `data/virginia/network/va_network_graph.gpickle` (or similar
-  serialization) + `va_topology_metrics.csv` (SS_ID, betweenness, degree,
-  is_articulation_point).
+- Nodes: substations (`sub_id`), attributed with lat/lon.
+- Edges: transmission lines between substations. Two subtleties handled
+  explicitly: same-substation internal lines are dropped (not real
+  inter-substation edges), and parallel circuits between the same two
+  substations are aggregated onto one edge with a `line_ids`/
+  `n_parallel_lines` count rather than collapsed to a single line, so
+  Phase 3's min-cut cost reflects the real number of lines to open.
+- Node attributes: betweenness centrality, degree, articulation-point flag
+  (`networkx.articulation_points`), connected-component id.
+- Output: `data/virginia/network/va_network_graph.pkl` +
+  `va_topology_metrics.csv` (sub_id, betweenness, degree,
+  is_articulation_point, component_id, in_main_component).
 
-**Day 1-2 risk**: real topology may have edge cases (radial stubs, isolated
-subgraphs) that break centrality assumptions. Budget accordingly — this is
-foundational for everything downstream, so don't rush past a broken graph.
+**Result (as run against real VA+PJM data)**: 2624 substations, 2967
+substation-pair edges (4586 physical lines), 49 connected components -- a
+2476-substation main component plus 148 substations across 48 small
+components (mostly isolated pairs). Of those 148, 11 are inside Virginia;
+the rest are elsewhere in PJM's 13-state footprint. This is a real, expected
+consequence of modeling EHV-only (>=200kV) lines -- the small components are
+almost certainly generator substations with a single private tie-line to one
+interconnection point, not a bug in the join logic (0 unresolved bus
+endpoints, 0 anomalous internal-line skips beyond the expected same-site
+connections). The 11 VA orphan substations are excluded from SCI ranking and
+islanding candidacy by design (`in_main_component=False`) -- they can't be
+meaningfully centrality-ranked or islanded against a network they aren't
+connected to in this dataset. Documented here as a known limitation, not
+silently dropped: `['816921387', '217112412', '82899127', '1234109369',
+'97721028', '638385315', '82899118', '1234109368', '149931761',
+'1464257782', '46831932']`.
+
+**Phase 1 complete.**
 
 ## Phase 2 — Substation Criticality Index (Day 3)
 
