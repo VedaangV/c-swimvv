@@ -10,10 +10,24 @@ into one ranked score per substation:
 - econ_exposure_i   <- va_substation_exposure.gpkg  (scripts/run_virginia_areal_interpolation.py)
 - betweenness_i     <- va_topology_metrics.csv      (scripts/build_virginia_network_graph.py)
 
-Only substations with in_main_component=True in va_topology_metrics.csv are
-eligible -- see ISLANDING_MITIGATION_PLAN.md's Phase 1 results for why (11
-Virginia substations sit outside the main connected component and can't be
-meaningfully ranked or islanded against a network they aren't part of here).
+Eligibility requires both in_main_component=True (see ISLANDING_MITIGATION_
+PLAN.md's Phase 1 results -- 11 Virginia substations sit outside the main
+connected component and can't be meaningfully ranked or islanded against a
+network they aren't part of here) AND the substation being inside Virginia.
+
+The Virginia restriction matters because va_gic_summary.csv and
+va_substation_exposure.gpkg are each already filtered to Virginia-only
+substations by the scripts that produce them (extract_virginia_results.py,
+run_virginia_areal_interpolation.py) -- consistent with this project's
+"model on the full PJM network, report on Virginia" convention throughout.
+va_topology_metrics.csv, correctly, is NOT pre-filtered (centrality needs
+the full PJM network for realistic connectivity). Left un-restricted here,
+Phase 2 would try to rank ~2000 non-Virginia PJM substations that were
+never in scope for GIC/econ data, and score them 0 on both -- which reads
+as "modeled and confirmed zero risk" rather than the true "never modeled,"
+silently corrupting the ranking. Restricting to Virginia substations first
+using the same lat/lon + get_virginia_boundary() check already used
+elsewhere in this pipeline avoids that.
 
 Economic exposure is GDP + population (not establishment counts) -- decided
 to keep the exposure term aligned with the $/day and population-affected
@@ -33,9 +47,10 @@ Usage:
 
 import geopandas as gpd
 import pandas as pd
+from shapely.geometry import Point
 
 from configs import setup_logger
-from configs.virginia_config import VA_ECON_DIR, VA_NETWORK_DIR
+from configs.virginia_config import VA_ECON_DIR, VA_NETWORK_DIR, get_virginia_boundary
 
 logger = setup_logger(log_file="logs/compute_virginia_criticality.log")
 
@@ -54,13 +69,16 @@ GDP_SECTOR_KEYS = (
 
 
 def load_topology_metrics() -> pd.DataFrame:
-    """sub_id, betweenness, in_main_component -- from Phase 1's output."""
+    """sub_id, betweenness, in_main_component, latitude, longitude -- from
+    Phase 1's output. Keeps lat/lon (unlike the version of this function in
+    an earlier revision) so eligibility can be restricted to Virginia
+    without re-reading substation_info.csv separately."""
     path = VA_NETWORK_DIR / "va_topology_metrics.csv"
     if not path.exists():
         raise FileNotFoundError(f"Missing {path}. Run scripts/build_virginia_network_graph.py first.")
     df = pd.read_csv(path)
     df["sub_id"] = df["sub_id"].astype(str)
-    return df[["sub_id", "betweenness", "in_main_component"]]
+    return df[["sub_id", "betweenness", "in_main_component", "latitude", "longitude"]]
 
 
 def load_gic_risk() -> pd.DataFrame:
@@ -108,11 +126,32 @@ def normalize_min_max(series: pd.Series) -> pd.Series:
     return (series - lo) / (hi - lo)
 
 
+def restrict_to_virginia(topology: pd.DataFrame) -> pd.DataFrame:
+    """va_gic_summary.csv and va_substation_exposure.gpkg only cover
+    Virginia substations -- restrict here too, using the same lat/lon +
+    boundary check pattern already used in extract_virginia_results.py and
+    build_virginia_network_graph.py, so eligibility for SCI ranking matches
+    what the other two signals can actually speak to."""
+    va_boundary = get_virginia_boundary()
+    in_va = topology.apply(
+        lambda r: va_boundary.contains(Point(r["longitude"], r["latitude"])), axis=1
+    )
+    excluded = (~in_va).sum()
+    if excluded:
+        logger.info(f"Excluding {excluded} non-Virginia substations from SCI ranking.")
+    return topology[in_va].copy()
+
+
 def compute_sci(topology: pd.DataFrame, gic: pd.DataFrame, econ: pd.DataFrame) -> pd.DataFrame:
+    topology = restrict_to_virginia(topology)
+
     eligible = topology[topology["in_main_component"]].copy()
     excluded = len(topology) - len(eligible)
     if excluded:
-        logger.info(f"Excluding {excluded} substations outside the main connected component from SCI ranking.")
+        logger.info(
+            f"Excluding {excluded} Virginia substations outside the main connected "
+            "component from SCI ranking."
+        )
 
     merged = eligible.merge(gic, on="sub_id", how="left").merge(econ, on="sub_id", how="left")
 
@@ -120,13 +159,17 @@ def compute_sci(topology: pd.DataFrame, gic: pd.DataFrame, econ: pd.DataFrame) -
     missing_econ = merged[["gdp_total", "population"]].isna().any(axis=1).sum()
     if missing_gic:
         logger.warning(
-            f"{missing_gic} eligible substations have no GIC risk data -- check sub_id "
-            "matching between va_topology_metrics.csv and va_gic_summary.csv."
+            f"{missing_gic} eligible Virginia substations have no GIC risk data -- this is "
+            "now unexpected (Virginia-only scoping already applied) and worth investigating, "
+            "not just noting. Check sub_id matching between va_topology_metrics.csv and "
+            "va_gic_summary.csv directly."
         )
     if missing_econ:
         logger.warning(
-            f"{missing_econ} eligible substations have no economic exposure data -- check "
-            "sub_id matching with va_substation_exposure.gpkg."
+            f"{missing_econ} eligible Virginia substations have no economic exposure data -- "
+            "this is now unexpected (Virginia-only scoping already applied) and worth "
+            "investigating, not just noting. Check sub_id matching with "
+            "va_substation_exposure.gpkg directly."
         )
     merged[["gic_risk", "gdp_total", "population"]] = merged[
         ["gic_risk", "gdp_total", "population"]
