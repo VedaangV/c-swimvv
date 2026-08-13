@@ -50,6 +50,20 @@ millions) and population is in raw headcounts (hundreds of thousands); a
 pre-normalization sum would let population numerically dominate and the
 "economic exposure" term would really just be measuring population.
 
+Phase 2b (optional, droppable): a fourth term, critical_load_i, counts
+hospitals + wastewater treatment plants (scripts/fetch_virginia_critical_
+loads.py's va_critical_facilities.csv) inside each substation's Voronoi
+service area -- the same service-area polygons va_substation_exposure.gpkg
+already carries for allocating GDP/population, so this reuses the project's
+existing "nearest substation" geometry rather than inventing a new
+radius/distance rule. Multiple facility types are combined as a simple
+total count (not weighted by category) -- decided to avoid a second,
+harder-to-justify weighting assumption on top of the SCI's own term
+weights. If va_critical_facilities.csv hasn't been fetched yet, this term
+is silently skipped and SCI falls back to the original three terms with
+1/3 weights each -- Phase 2b was designed to be fully droppable, so its
+absence must never be an error.
+
 Usage:
     python scripts/compute_virginia_criticality.py
 """
@@ -63,10 +77,13 @@ from configs.virginia_config import VA_ECON_DIR, VA_NETWORK_DIR, get_virginia_bo
 
 logger = setup_logger(log_file="logs/compute_virginia_criticality.log")
 
-# Default equal weighting. Worth testing alternative weight sets once the
-# pipeline runs end-to-end -- report how sensitive the ranking is, don't
-# just present one weight choice as ground truth.
-WEIGHTS = {"gic_risk": 1 / 3, "econ_exposure": 1 / 3, "betweenness": 1 / 3}
+# Default equal weighting, three-term (Phase 2) or four-term (Phase 2b, if
+# va_critical_facilities.csv is present) -- compute_sci() picks the matching
+# set automatically. Worth testing alternative weight sets once the pipeline
+# runs end-to-end -- report how sensitive the ranking is, don't just present
+# one weight choice as ground truth.
+WEIGHTS_3 = {"gic_risk": 1 / 3, "econ_exposure": 1 / 3, "betweenness": 1 / 3}
+WEIGHTS_4 = {"gic_risk": 1 / 4, "econ_exposure": 1 / 4, "betweenness": 1 / 4, "critical_load": 1 / 4}
 
 RANK_COL = "GIC_100_mean"  # 100yr ground-GIC magnitude, from va_ground_gic_summary.csv
 
@@ -132,6 +149,64 @@ def load_economic_exposure() -> pd.DataFrame:
     return gdf[["sub_id", "gdp_total", "POP20"]].rename(columns={"POP20": "population"})
 
 
+def load_critical_facility_counts() -> pd.DataFrame | None:
+    """sub_id, critical_load_count -- from Phase 2b's va_critical_facilities.csv
+    (scripts/fetch_virginia_critical_loads.py), point-in-polygon joined
+    against the Voronoi substation service areas already stored as geometry
+    in va_substation_exposure.gpkg.
+
+    Returns None (not an error) when the fetch script hasn't been run --
+    Phase 2b is explicitly optional and compute_sci() falls back to the
+    three-term SCI in that case.
+    """
+    facilities_path = VA_NETWORK_DIR / "va_critical_facilities.csv"
+    if not facilities_path.exists():
+        logger.info(
+            f"{facilities_path} not found -- skipping critical_load_i (Phase 2b "
+            "is optional; run scripts/fetch_virginia_critical_loads.py first to "
+            "include it). Falling back to the three-term SCI."
+        )
+        return None
+
+    facilities = pd.read_csv(facilities_path)
+    if facilities.empty:
+        logger.warning(f"{facilities_path} exists but has 0 rows -- skipping critical_load_i.")
+        return None
+
+    service_areas_path = VA_ECON_DIR / "va_substation_exposure.gpkg"
+    if not service_areas_path.exists():
+        raise FileNotFoundError(f"Missing {service_areas_path}. Run scripts/run_virginia_areal_interpolation.py first.")
+    service_areas = gpd.read_file(service_areas_path)[["sub_id", "geometry"]]
+    service_areas["sub_id"] = service_areas["sub_id"].astype(str)
+
+    # va_substation_exposure.gpkg's geometry is in the areal-interpolation
+    # raster's projected CRS, not EPSG:4326 -- build the facility points in
+    # 4326 (where the fetch script saved lat/lon) and reproject to match,
+    # rather than assuming the two already agree.
+    points = gpd.GeoDataFrame(
+        facilities,
+        geometry=gpd.points_from_xy(facilities["longitude"], facilities["latitude"]),
+        crs="EPSG:4326",
+    ).to_crs(service_areas.crs)
+
+    joined = gpd.sjoin(points, service_areas, predicate="within", how="inner")
+    unmatched = len(points) - len(joined)
+    if unmatched:
+        logger.warning(
+            f"{unmatched}/{len(points)} critical facilities fell outside every "
+            "substation's Voronoi service area (likely a border edge effect, "
+            "same as run_virginia_areal_interpolation.py's documented "
+            "limitation) and are excluded from the count."
+        )
+
+    counts = joined.groupby("sub_id").size().rename("critical_load_count").reset_index()
+    logger.info(
+        f"{len(joined)} critical facilities matched to {len(counts)} substations. "
+        f"By category: {facilities['category'].value_counts().to_dict()}"
+    )
+    return counts
+
+
 def normalize_min_max(series: pd.Series) -> pd.Series:
     """Scale to [0, 1]. If every value is identical, return 0.5 for all of
     them -- "no variation" should read as "this signal has nothing to say
@@ -158,7 +233,12 @@ def restrict_to_virginia(topology: pd.DataFrame) -> pd.DataFrame:
     return topology[in_va].copy()
 
 
-def compute_sci(topology: pd.DataFrame, gic: pd.DataFrame, econ: pd.DataFrame) -> pd.DataFrame:
+def compute_sci(
+    topology: pd.DataFrame,
+    gic: pd.DataFrame,
+    econ: pd.DataFrame,
+    critical_load: pd.DataFrame | None = None,
+) -> pd.DataFrame:
     topology = restrict_to_virginia(topology)
 
     eligible = topology[topology["in_main_component"]].copy()
@@ -197,26 +277,45 @@ def compute_sci(topology: pd.DataFrame, gic: pd.DataFrame, econ: pd.DataFrame) -
     merged["econ_exposure_norm"] = (merged["gdp_norm"] + merged["population_norm"]) / 2
     merged["betweenness_norm"] = normalize_min_max(merged["betweenness"])
 
-    merged["SCI"] = (
-        WEIGHTS["gic_risk"] * merged["gic_risk_norm"]
-        + WEIGHTS["econ_exposure"] * merged["econ_exposure_norm"]
-        + WEIGHTS["betweenness"] * merged["betweenness_norm"]
-    )
-
-    return merged[
-        [
+    if critical_load is not None:
+        merged = merged.merge(critical_load, on="sub_id", how="left")
+        merged["critical_load_count"] = merged["critical_load_count"].fillna(0)
+        merged["critical_load_norm"] = normalize_min_max(merged["critical_load_count"])
+        weights = WEIGHTS_4
+        merged["SCI"] = (
+            weights["gic_risk"] * merged["gic_risk_norm"]
+            + weights["econ_exposure"] * merged["econ_exposure_norm"]
+            + weights["betweenness"] * merged["betweenness_norm"]
+            + weights["critical_load"] * merged["critical_load_norm"]
+        )
+        logger.info(f"SCI computed with 4 terms (weights: {weights}).")
+        out_cols = [
+            "sub_id", "gic_risk", "gdp_total", "population", "betweenness", "critical_load_count",
+            "gic_risk_norm", "econ_exposure_norm", "betweenness_norm", "critical_load_norm", "SCI",
+        ]
+    else:
+        weights = WEIGHTS_3
+        merged["SCI"] = (
+            weights["gic_risk"] * merged["gic_risk_norm"]
+            + weights["econ_exposure"] * merged["econ_exposure_norm"]
+            + weights["betweenness"] * merged["betweenness_norm"]
+        )
+        logger.info(f"SCI computed with 3 terms (weights: {weights}); critical_load_i not included.")
+        out_cols = [
             "sub_id", "gic_risk", "gdp_total", "population", "betweenness",
             "gic_risk_norm", "econ_exposure_norm", "betweenness_norm", "SCI",
         ]
-    ]
+
+    return merged[out_cols]
 
 
 def main():
     topology = load_topology_metrics()
     gic = load_gic_risk()
     econ = load_economic_exposure()
+    critical_load = load_critical_facility_counts()
 
-    sci = compute_sci(topology, gic, econ)
+    sci = compute_sci(topology, gic, econ, critical_load)
     sci = sci.sort_values("SCI", ascending=False).reset_index(drop=True)
 
     out_path = VA_ECON_DIR / "va_substation_criticality.csv"
