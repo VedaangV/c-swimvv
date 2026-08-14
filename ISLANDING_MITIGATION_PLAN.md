@@ -128,15 +128,62 @@ the top-15 table, and the risk map all now rank on the same signal.
 
 ## Phase 2b — Critical-load data (Day 4, droppable)
 
-Source Loudoun County / NoVA data center locations (public GIS) and HIFLD
-critical-facility layers (hospitals, water systems), spatial-join to nearest
-substation by `SS_ID`, fold into `critical_load_i` in Phase 2's formula.
+**New file: `scripts/fetch_virginia_critical_loads.py`**
 
-**Constraint**: I can't browse and download arbitrary external GIS sites
-directly from this session. You'll likely need to pull the file(s) locally
-and hand them to me (or find a directly-fetchable public API/CSV I can pull
-via WebFetch). If this stalls, it's fully droppable — SCI still works on
-three terms.
+Source hospitals, wastewater treatment plants, and data-center locations,
+point-in-polygon join each against the Voronoi substation service areas
+`run_virginia_areal_interpolation.py` already computes (the same "nearest
+substation" geometry GDP/population get allocated through — no separate
+radius/distance rule needed), and fold a total facility count into
+`critical_load_i` in Phase 2's formula as a fourth, equally-weighted term.
+
+**Constraint, as predicted**: I can't browse/verify arbitrary external GIS
+sites from this sandbox — confirmed directly (hard egress denials against
+`hifld-geoplatform.opendata.arcgis.com` and `services.arcgis.com`, and
+`maps.nccs.nasa.gov` didn't even resolve). Every data source below had to
+be run and verified by the user locally, not by me.
+
+**Source-finding, three rounds**:
+1. Wastewater treatment plants: an EPA-hosted ArcGIS FeatureServer, found
+   via search, worked on the first real run — but its first real run also
+   surfaced a genuine pagination bug (the fetch script stopped on any page
+   shorter than requested, when it should only stop on a genuinely *empty*
+   page — ArcGIS services commonly cap a page below what's asked for
+   regardless). Silently truncated this category at exactly 1000 records
+   (server's own cap) on the first run; fixed, and the real re-run recovered
+   386 records, up from 288.
+2. Hospitals: HIFLD Open's Hospitals dataset (the search-found FeatureServer
+   URL) returned 0 records on a real run — turned out the whole dataset is
+   gone from HIFLD's public catalog (DHS restricted several HIFLD Open
+   layers, hospitals included, to agency-only access), confirmed by hand
+   search. Switched to OpenStreetMap via Overpass (`amenity=hospital`),
+   reusing `build_virginia_network.py`'s already-proven Overpass
+   infrastructure (same servers, User-Agent, retry pattern) — worked
+   immediately, 146 Virginia hospitals.
+3. Data centers: no Loudoun County GIS layer was findable at all (neither
+   an API URL nor a manually-browsable dataset page — only an ArcGIS Hub
+   "Experience" map with no exposed underlying service), confirmed by the
+   user's own search. Also switched to Overpass (`telecom=data_center`) —
+   385 Virginia matches. Coverage here is the least certain of the three
+   (some operators avoid being mapped, and the tag can also catch smaller
+   telecom equipment sites, not just large-scale facilities) — worth a
+   name spot-check before the methods write-up cites this figure as a
+   facility count rather than an OSM-tag count.
+
+**Result (as run against real VA+PJM data)**: 917 facilities fetched (386
+wastewater treatment plants, 385 data centers, 146 hospitals), 888 matched
+into a substation's Voronoi service area (29 fell outside every cell — a
+border edge effect, same known limitation as the areal-interpolation step),
+landing on 236 distinct substations. SCI re-computed with four equally-
+weighted terms; formula hand-verified exactly on two rows (top two:
+0.457031 and 0.377580). The ranking visibly changed in a sensible direction,
+not just numerically: `708152212` (previous #1 on the three-term SCI, still
+highest on raw GIC risk) dropped to #2 because it has zero nearby critical
+facilities, while `707088636` — 35 critical facilities in its service area,
+almost certainly part of the Ashburn/Loudoun data-center cluster — became
+#1. That is the intended effect of adding a real fourth signal, not noise.
+
+**Phase 2b complete.**
 
 ## Phase 3 — Seeded region-growing islanding algorithm (Day 5-6)
 
