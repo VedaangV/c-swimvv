@@ -176,12 +176,60 @@ into a substation's Voronoi service area (29 fell outside every cell — a
 border edge effect, same known limitation as the areal-interpolation step),
 landing on 236 distinct substations. SCI re-computed with four equally-
 weighted terms; formula hand-verified exactly on two rows (top two:
-0.457031 and 0.377580). The ranking visibly changed in a sensible direction,
-not just numerically: `708152212` (previous #1 on the three-term SCI, still
-highest on raw GIC risk) dropped to #2 because it has zero nearby critical
-facilities, while `707088636` — 35 critical facilities in its service area,
-almost certainly part of the Ashburn/Loudoun data-center cluster — became
-#1. That is the intended effect of adding a real fourth signal, not noise.
+0.457031 and 0.377580).
+
+**Correction — the ranking above was wrong, and here's how it was caught.**
+The first real run's #1 substation, `707088636`, was assumed here to be
+"almost certainly part of the Ashburn/Loudoun data-center cluster" on the
+strength of its 35 critical facilities and high population (185,417). That
+assumption was never checked against its actual coordinates before being
+written down — and it was wrong. Plotting the SCI map
+(`viz/plot_virginia_criticality.py`) surfaced it visually: `707088636` sat
+alone in far southwestern Virginia, at (36.86, -81.42) — Damascus, right on
+the Tennessee border — as by far the largest, darkest point on the map,
+nowhere near any real concentration of population or infrastructure.
+Pulling its full row and comparing its Voronoi service-area size against
+the rest confirmed the mechanism: a **6,747 km² cell (99.5th percentile;
+median across 413 VA substations is 64 km²)**, over 100x typical, that had
+absorbed population and facility counts from a huge swath of sparsely-
+populated southwestern Virginia purely because of its size — not because
+`707088636` is actually near real exposure. This is a known, pre-existing
+limitation of the areal-interpolation step (`run_virginia_areal_
+interpolation.py`'s own docstring already flags it: border substations
+near non-PJM neighbors get poorly-bounded, oversized Voronoi cells since
+out-of-state generator points aren't included) — SCI's ranking is simply
+the first thing to have ever ranked individual substations by these values,
+which is what made a pre-existing, previously-invisible data issue
+suddenly load-bearing for Phase 3's seed selection.
+
+**Fix**: `econ_exposure_i` and `critical_load_i` now use *density* (per
+km² of Voronoi cell), not raw totals, before normalizing — implemented in
+`compute_virginia_criticality.py`, verified with a regression fixture that
+reproduces the exact bug (two substations with identical raw totals but
+very different cell sizes now correctly re-rank by density instead of
+tying). GIC risk and betweenness are untouched (neither is Voronoi-derived,
+so neither was ever affected).
+
+**Result (density-corrected, real data)**: `707088636` no longer appears in
+the top 10 at all. New #1 is `708152212` (SCI=0.368896, gic_risk_norm=1.0,
+hand-verified exact match) — the same substation that led the very first
+three-term SCI run, before critical_load_i or the density bug were ever in
+the picture. Its high GIC risk (844.7 A) and moderate betweenness now
+correctly dominate, with a low economic-density term (this kind of high-
+GIC bulk-transmission node isn't necessarily inside a population center).
+Formula hand-verified exactly on two more rows (0.368896 and 0.319636).
+The corrected top 10 has no single outlier value — SCI descends smoothly
+from 0.369 to 0.224, consistent with a sane, non-degenerate ranking.
+
+**Second finding from the same real run, unrelated to the density bug**:
+the criticality chart's bar labels showed what looked like two duplicate
+entries ("115000 substation (lat, lon)" appearing twice). Not a data bug —
+two genuinely different substations share a voltage class and both lack an
+OSM name tag, so `_load_substation_labels()`'s fallback produced
+visually-near-identical labels differing only in small-print coordinates.
+Fixed in both `plot_virginia_criticality.py` and `plot_virginia_gic_risk.py`
+(which duplicate this helper) by appending the substation's sub_id to any
+fallback label, guaranteeing visual uniqueness.
 
 **Phase 2b complete.**
 
