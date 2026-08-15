@@ -68,18 +68,23 @@ def _find_col(columns, candidates) -> str | None:
 
 
 def _read_with_header_detection(path, required_candidates) -> pd.DataFrame:
-    """EIA-860 sheets commonly have a title row above the real header --
-    try header=0 first, fall back to header=1 if none of the required
-    columns are found, and raise a clear, columns-listing error rather
-    than silently returning garbage if neither works."""
-    for header_row in (0, 1):
+    """EIA-860 sheets commonly have explanatory/title text above the real
+    header -- final-release years usually need header=1, but early-release
+    years (e.g. the "2025 Early Release" caveat text) push it further down.
+    Try header=0..3 and fall back to whichever produced the most columns
+    (a real header row parses into many named columns; a title-row misread
+    produces mostly 'Unnamed: N') if none matched the required candidates,
+    rather than silently returning garbage."""
+    attempts = {}
+    for header_row in range(4):
         df = pd.read_excel(path, header=header_row)
+        attempts[header_row] = df
         if any(_find_col(df.columns, cands) for cands in required_candidates):
             return df
-    df0 = pd.read_excel(path, header=0)
+    tried = {row: list(df.columns) for row, df in attempts.items()}
     raise ValueError(
-        f"{path}: couldn't find expected columns with header=0 or header=1. "
-        f"Columns seen at header=0: {list(df0.columns)}. Tell me what you see "
+        f"{path}: couldn't find expected columns trying header=0..3. "
+        f"Columns seen at each row: {tried}. Tell me what you see "
         "and I'll fix the column matching."
     )
 
