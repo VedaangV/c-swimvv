@@ -245,8 +245,11 @@ Implements the algorithm agreed on:
    boundary).
 2. **Initialize**: island = `{seed}`; boundary = every line connecting the
    seed to a neighbor.
-3. **Score**: `value = sum(SCI over island members)`, `cost = len(boundary
-   lines)`, `ratio = value / cost`.
+3. **Score**: `value = sum(SCI over island members)`, `cost = voltage-weighted
+   sum over boundary lines` (kV/100 per physical parallel line, not a flat
+   per-line count — cutting a 500kV line is a bigger deal than cutting a
+   138kV one; an explicit modeling assumption, worth a sensitivity check
+   later), `ratio = value / cost`.
 4. **Grow**: for every substation adjacent to the current boundary, compute
    the resulting `ratio` if added (accounting for boundary lines that become
    internal vs. new external lines the neighbor introduces). Add whichever
@@ -264,6 +267,78 @@ methods section: which substation was added at each step and why).
 This is a pure graph-algorithm step with no dependency on the electrical
 solve — testable and debuggable in isolation before touching the admittance
 pipeline.
+
+**Literature grounding**: the algorithm's direct ancestor is Clauset (2005),
+"Finding local community structure in networks" — seed-node greedy
+expansion maximizing a local ratio metric, stopping when no neighbor
+improves it, specifically so it needs no global network knowledge. The
+departure here: Clauset's ratio is raw unweighted edge counts; this project
+replaces it with a domain-weighted ratio (SCI-weighted value over real
+physical line-cut cost) — adapting a general local-community-detection
+template to a risk-weighted, engineering-cost-aware setting, not inventing
+greedy region-growing from scratch. Explicitly **not** mainstream power-
+systems "controlled islanding" (spectral-clustering/slow-coherency methods
+optimizing generator dynamic-stability coherency for real-time response to
+cascading contingencies across the whole network) — a different problem
+with different constraints, not a lighter version of that literature.
+GIC-specific precedent for topology reconfiguration as a mitigation
+strategy: "Optimal Transmission Line Switching under Geomagnetic
+Disturbances" (arXiv:1701.01469). Islanding specifically, combined with
+GIC, doesn't have a direct precedent paper — an honest gap, not a hidden
+one; the contribution is a defensible combination of separately-established
+ideas applied to an under-explored specific use case. Full reasoning in
+`scripts/select_virginia_island.py`'s module docstring.
+
+**Clarification that came out of reviewing the first real run — protective,
+not resilience, islanding.** Working through the actual New Zealand
+precedent in detail (Oughton et al. 2017's economic-impact methodology, and
+the closely related arXiv:2507.12495 assessment of NZ mitigation
+strategies) confirmed what this project's islanding means: a **temporary,
+planned disconnection during a storm's peak-risk window**, to break the
+conductive path GIC needs to flow through a transformer, then reconnect
+once the storm passes. It is *not* about the island continuing to operate
+independently on local generation — the NZ paper doesn't claim continuity
+of service either; it treats the island's own short outage as a real but
+small cost, dwarfed by the alternative (a damaged large power transformer
+can take 12-24+ months to replace, versus a few hours of planned
+disconnection). This matters for Phase 5's design — see below — and
+confirms Phase 3/4 as already planned don't need generator/generation-
+balance data to be methodologically sound.
+
+The NZ paper's headline results are also **whole-region**, not island-only:
+GDP loss is computed for the whole country under each mitigation scenario
+(including islanding) and compared to the no-mitigation baseline. Phase 4/5
+were already planned to match this — re-solve GIC for the *entire* VA+PJM
+network with Island A's boundary cut (not a standalone island-only
+re-solve), then run the same whole-Virginia economic pipeline on that
+output, producing a whole-VA $/day figure directly comparable to the
+$145.5M/day baseline. No change needed there, just confirmed as the right
+target.
+
+**New file (optional, bonus): `scripts/check_island_generation.py`** — not
+part of the core methodology (islanding doesn't require the island to stay
+powered, per above), but a cheap factual check worth having: does Island A
+happen to already contain real generation capacity? Matches EIA-860 plant
+locations (manually downloaded — see the script's docstring) to Island A's
+members within `SNAP_DISTANCE_M` and reports total matched nameplate
+capacity. If Island A turns out to have real capacity, that's a genuinely
+stronger result worth reporting; if not, that's expected and doesn't change
+anything else.
+
+**Result (as run against real VA+PJM data)**: seed `708152212` (the same
+substation that topped the very first three-term SCI run and the density-
+corrected run — highest raw GIC risk, 844.7 A). Grew to 3 members
+(`708152212`, `1495710287`, `96421965`) before stopping on ratio non-
+improvement, well under the 15-substation cap. 2 boundary lines cut,
+voltage-weighted cost 10.00, final ratio 0.061 (up from the seed-only
+baseline of 0.037 — the ratio improved at every step, as it must by
+construction). Growth trace, hand-verifiable step by step:
+```
+step 0: added 708152212 -- seed (argmax SCI)         (size=1, value=0.3689, cost=10.00)
+step 1: added 1495710287 -- ratio 0.0369 -> 0.0386    (size=2, value=0.5635, cost=14.60)
+step 2: added 96421965  -- ratio 0.0386 -> 0.0608     (size=3, value=0.6084, cost=10.00)
+```
+**Phase 3 complete.**
 
 ## Phase 4 — Topology-edit support in the admittance/GIC pipeline (Day 6-8, highest risk)
 
@@ -302,10 +377,33 @@ results and write to a separate `va_island_a_econ/` subdirectory rather than
 overwriting baseline output) and `run_virginia_econ_analysis.py`.
 
 Produces avoided-GDP-loss numbers directly comparable to the existing
-$145.5M/day (100yr) baseline figure. Compute a rough benefit-cost ratio using
-an assumed switching-cost estimate (labor-based, same style as the NZ paper's
-$250k figure) — **explicitly flag this as an assumption**, not a real utility
-quote, in whatever gets written up.
+$145.5M/day (100yr) baseline figure — computed for the **whole VA+PJM
+network** with Island A's boundary cut, not an island-only re-solve, so the
+result is a whole-Virginia $/day figure under "Island A protected," matching
+the NZ paper's own whole-region reporting style (see Phase 3's writeup).
+
+**Benefit-cost accounting, refined after clarifying what islanding actually
+means here (see Phase 3)**: since islanding is a temporary, planned
+disconnection (not a resilience/local-generation scenario), the net benefit
+must account for the cost side honestly, not just the avoided-damage side:
+
+- **Benefit**: avoided transformer-damage/failure-probability cost, from
+  comparing baseline vs. islanded fragility/econ output (the existing plan).
+- **Cost, two terms**:
+  1. Switching-operation labor cost (the original plan's estimate, same
+     style as the NZ paper's $250k figure — explicitly flagged as an
+     assumption, not a real utility quote).
+  2. **New**: the economic cost of Island A's own population/GDP going
+     without grid power for the assumed disconnection duration (a storm's
+     peak-risk window — hours, an explicit flagged assumption, not a real
+     utility procedure). Uses the population/GDP-density data already
+     computed for SCI in Phase 2 — no new data source needed, just a new
+     use of data already on hand.
+
+Net benefit-cost ratio = avoided-damage benefit / (switching cost + island's
+own temporary-outage cost) — reported in the same style as the NZ paper's
+700:1-class figures, but now honestly netting out the island's own cost
+rather than only counting the benefit side.
 
 ## Phase 6 — Second island, comparison (Day 9, droppable)
 
