@@ -338,6 +338,18 @@ step 0: added 708152212 -- seed (argmax SCI)         (size=1, value=0.3689, cost
 step 1: added 1495710287 -- ratio 0.0369 -> 0.0386    (size=2, value=0.5635, cost=14.60)
 step 2: added 96421965  -- ratio 0.0386 -> 0.0608     (size=3, value=0.6084, cost=10.00)
 ```
+
+**`check_island_generation.py` result (EIA-860 2025 Early Release, run against
+real data)**: 0 MW matched — none of Island A's 3 members have EIA-860
+generation capacity within `SNAP_DISTANCE_M`. Consistent with, not
+surprising given, the seed's own profile from Phase 2b: `708152212` is a
+high-GIC bulk-transmission node, not a population- or generation-colocated
+site (low economic-density term in its SCI breakdown). Confirms the
+"protective, not resilience" framing above is the operative one for this
+particular island — there's no local generation to fall back on, so the
+temporary planned-outage accounting in Phase 5 (not an assumption of
+continued local service) is the right model, not a simplification of it.
+
 **Phase 3 complete.**
 
 ## Phase 4 — Topology-edit support in the admittance/GIC pipeline (Day 6-8, highest risk)
