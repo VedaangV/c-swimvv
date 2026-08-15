@@ -381,6 +381,22 @@ underlying functions).
   validation — weaker, but honest and completable. Frame explicitly as
   "candidate identification" with electrical validation as future work.
 
+**Implemented**: `scripts/run_virginia_islanded_gic.py`, a thin wrapper
+around `scripts/run_virginia_gic.py`'s now-parameterized `main()`
+(`exclude_line_ids`/`gic_dir`/`gnd_gic_dir`, defaults reproducing the exact
+original baseline). Line removal happens once on `df_lines` before the
+Monte Carlo loop; both the admittance matrix and geoelectric injection
+currents consume the same filtered table, so nothing else needs editing.
+Two safety checks run before the solve: Island A's internal connectivity
+(hard-fails if violated — should be structurally impossible per how Phase
+3 grows islands) and whether cutting the boundary fragments the rest of
+the network further (logged, not blocking — the existing Monte Carlo
+loop's non-zero-row filtering already handles any resulting isolated node
+numerically). Verified against synthetic graph/`df_lines` fixtures — the
+real HDF5-backed Monte Carlo loop itself needs real VA+PJM data not
+available in this sandbox, so **not yet run against real data** — that's
+the next step, on the user's machine.
+
 ## Phase 5 — Economic re-evaluation (Day 8-9)
 
 Push the islanded-topology GIC output through the existing fragility Monte
