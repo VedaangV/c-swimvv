@@ -63,6 +63,13 @@ VA_ECON_DIR = VA_DATA_DIR / "econ"
 VA_STATISTICAL_ANALYSIS_DIR = VA_DATA_DIR / "statistical_analysis"
 VA_FIGURES_DIR = Path(__file__).resolve().parent.parent / "figures" / "virginia"
 
+# Phase 4 (ISLANDING_MITIGATION_PLAN.md) -- islanded-topology GIC re-solve
+# output, kept entirely separate from the baseline va_gic/va_gnd_gic
+# directories above so Island A's results never overwrite or get confused
+# with the unmodified-topology baseline.
+VA_ISLAND_A_GIC_DIR = VA_DATA_DIR / "gic_island_a"
+VA_ISLAND_A_GND_GIC_DIR = VA_DATA_DIR / "gnd_gic_island_a"
+
 for _d in (
     VA_DATA_DIR,
     VA_NETWORK_DIR,
@@ -73,6 +80,8 @@ for _d in (
     VA_ECON_DIR,
     VA_STATISTICAL_ANALYSIS_DIR,
     VA_FIGURES_DIR,
+    VA_ISLAND_A_GIC_DIR,
+    VA_ISLAND_A_GND_GIC_DIR,
 ):
     _d.mkdir(parents=True, exist_ok=True)
 

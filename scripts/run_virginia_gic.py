@@ -23,6 +23,31 @@ sequential-iteration structure rather than inventing a multiprocessing
 pattern the reference implementation doesn't have.
 
 Run after scripts/run_virginia_admittance.py.
+
+PHASE 4 (ISLANDING_MITIGATION_PLAN.md) EXTENSION: main() takes an optional
+exclude_line_ids set and gic_dir/gnd_gic_dir overrides, so the same Monte
+Carlo loop can re-solve GIC with Island A's boundary lines removed, writing
+to a separate output directory rather than overwriting the baseline. See
+scripts/run_virginia_islanded_gic.py, the thin wrapper that calls this
+with those parameters set -- kept as parameters on the existing function
+rather than a separate near-duplicate 150-line loop, since
+run_virginia_gic.py is itself already Virginia-adaptation code (not the
+shared/national est_gic.py this project avoids editing in place), so
+extending it directly here is the right level to make this change at.
+Defaults (exclude_line_ids=None, gic_dir=VA_GIC_DIR, gnd_gic_dir=
+VA_GND_GIC_DIR) reproduce the exact original baseline behavior.
+
+Line removal happens once, on the full df_lines, before the Monte Carlo
+loop starts -- deterministic topology edit, not a per-sample stochastic
+effect like apply_random_line_dc_blocking()'s per-iteration DC-blocker
+mask (which still applies on top, now operating on the reduced line set).
+Removing a line here means it contributes nothing to either the admittance
+matrix (network_admittance()/random_admittance_matrix() iterate whatever
+df_lines they're handed) or the geoelectric injection currents
+(get_injection_currents() sums per-line contributions from the same
+df_lines) -- both consume the identical filtered table, so no other
+structure (buses, transformers, grounding) needs to change for the
+substations that remain connected via other paths.
 """
 
 import argparse
@@ -59,7 +84,13 @@ logger = setup_logger(log_file="logs/run_virginia_gic.log")
 VA_RESULTS_PATH = "statistical_analysis/va_geomagnetic_data_return_periods.h5"
 
 
-def main(start_idx: int = 0, end_idx: int | None = None):
+def main(
+    start_idx: int = 0,
+    end_idx: int | None = None,
+    exclude_line_ids: set | None = None,
+    gic_dir=VA_GIC_DIR,
+    gnd_gic_dir=VA_GND_GIC_DIR,
+):
     # get_transformer_samples()/process_substation_buses() read/write a
     # module-level DATA_LOC in build_admittance_matrix.py, not a parameter.
     bam.DATA_LOC = VA_DATA_DIR
@@ -79,6 +110,23 @@ def main(start_idx: int = 0, end_idx: int | None = None):
         load_and_process_gic_data(VA_DATA_DIR, df_lines, VA_RESULTS_PATH)
     )
 
+    if exclude_line_ids:
+        exclude_line_ids = {str(x) for x in exclude_line_ids}
+        before = len(df_lines)
+        df_lines = df_lines[~df_lines["name"].astype(str).isin(exclude_line_ids)].reset_index(drop=True)
+        removed = before - len(df_lines)
+        logger.info(
+            f"Islanding: removed {removed}/{before} lines from df_lines "
+            f"(boundary_line_ids had {len(exclude_line_ids)})."
+        )
+        if removed != len(exclude_line_ids):
+            logger.warning(
+                f"Removed {removed} lines but exclude_line_ids had {len(exclude_line_ids)} "
+                "entries -- some IDs didn't match df_lines['name'] (duplicates, or an ID "
+                "mismatch between va_island_a.json and this run's transmission_lines.csv). "
+                "Investigate before trusting the islanded results."
+            )
+
     sub_ref = dict(zip(df_substations_info.name, df_substations_info.buses))
     n_nodes = len(sub_look_up)
 
@@ -89,8 +137,8 @@ def main(start_idx: int = 0, end_idx: int | None = None):
         if end_idx is not None and i >= end_idx:
             break
 
-        out_path = VA_GIC_DIR / f"winding_gic_rand_{i}.csv"
-        gnd_out_path = VA_GND_GIC_DIR / f"ground_gic{i}.csv"
+        out_path = gic_dir / f"winding_gic_rand_{i}.csv"
+        gnd_out_path = gnd_gic_dir / f"ground_gic{i}.csv"
         if out_path.exists() and gnd_out_path.exists():
             continue
 
