@@ -50,19 +50,41 @@ millions) and population is in raw headcounts (hundreds of thousands); a
 pre-normalization sum would let population numerically dominate and the
 "economic exposure" term would really just be measuring population.
 
+econ_exposure_i and critical_load_i both use DENSITY (per km2 of the
+substation's Voronoi service-area polygon), not raw totals -- found to be
+necessary after a real run's #1-ranked substation turned out to be a
+Damascus, VA site right on the Tennessee border, sitting in a 6,747 km2
+Voronoi cell (99.5th percentile; median across all 413 VA substations is
+64 km2) that had absorbed 185,417 people and 35 "critical facilities" from
+across the whole surrounding region purely because the cell's polygon was
+enormous, not because that substation is actually near a real concentration
+of exposure. This is a known, pre-existing limitation of the areal-
+interpolation step (documented in run_virginia_areal_interpolation.py's own
+docstring: border substations near non-PJM neighbors get poorly-bounded,
+oversized Voronoi cells since out-of-state generator points aren't
+included) -- SCI's ranking is what first exposed it as load-bearing, since
+nothing upstream had ever ranked individual substations by these values
+before. Dividing by cell area before normalizing fixes it for every
+substation, not just the most extreme outlier, and better matches what SCI
+is actually meant to capture for islanding purposes: how much exposure/
+critical infrastructure sits close to a given substation, not how large a
+polygon Voronoi happened to draw around it. Raw totals are kept alongside
+the density values in this script's output for transparency, but only the
+density values feed the SCI formula.
+
 Phase 2b (optional, droppable): a fourth term, critical_load_i, counts
-hospitals + wastewater treatment plants (scripts/fetch_virginia_critical_
-loads.py's va_critical_facilities.csv) inside each substation's Voronoi
-service area -- the same service-area polygons va_substation_exposure.gpkg
-already carries for allocating GDP/population, so this reuses the project's
-existing "nearest substation" geometry rather than inventing a new
-radius/distance rule. Multiple facility types are combined as a simple
-total count (not weighted by category) -- decided to avoid a second,
-harder-to-justify weighting assumption on top of the SCI's own term
-weights. If va_critical_facilities.csv hasn't been fetched yet, this term
-is silently skipped and SCI falls back to the original three terms with
-1/3 weights each -- Phase 2b was designed to be fully droppable, so its
-absence must never be an error.
+hospitals + wastewater treatment plants + data centers (scripts/fetch_
+virginia_critical_loads.py's va_critical_facilities.csv) inside each
+substation's Voronoi service area -- the same service-area polygons
+va_substation_exposure.gpkg already carries for allocating GDP/population,
+so this reuses the project's existing "nearest substation" geometry rather
+than inventing a new radius/distance rule. Multiple facility types are
+combined as a simple total count (not weighted by category) -- decided to
+avoid a second, harder-to-justify weighting assumption on top of the SCI's
+own term weights. If va_critical_facilities.csv hasn't been fetched yet,
+this term is silently skipped and SCI falls back to the original three
+terms with 1/3 weights each -- Phase 2b was designed to be fully droppable,
+so its absence must never be an error.
 
 Usage:
     python scripts/compute_virginia_criticality.py
@@ -127,11 +149,14 @@ def load_gic_risk() -> pd.DataFrame:
 
 
 def load_economic_exposure() -> pd.DataFrame:
-    """sub_id, gdp_total, population -- from va_substation_exposure.gpkg.
+    """sub_id, gdp_total, population, area_km2 -- from va_substation_exposure.gpkg.
 
-    Returns gdp_total and population as separate columns, deliberately not
-    summed -- see module docstring for why they need independent
-    normalization before being combined.
+    Returns raw totals AND each substation's Voronoi service-area size
+    (km2), deliberately not pre-divided into density here -- compute_sci()
+    does that division (needs area_km2 for critical_load_i's density too,
+    and keeping the raw totals visible in this function's output makes the
+    transformation auditable rather than hidden inside a loader). See
+    module docstring for why density, not raw totals, drives the SCI score.
     """
     path = VA_ECON_DIR / "va_substation_exposure.gpkg"
     if not path.exists():
@@ -146,7 +171,16 @@ def load_economic_exposure() -> pd.DataFrame:
         raise ValueError(f"Expected POP20 column in {path}; got {list(gdf.columns)}")
 
     gdf["gdp_total"] = gdf[gdp_cols].sum(axis=1)
-    return gdf[["sub_id", "gdp_total", "POP20"]].rename(columns={"POP20": "population"})
+    gdf["area_km2"] = gdf.geometry.area / 1e6
+    zero_area = (gdf["area_km2"] <= 0).sum()
+    if zero_area:
+        logger.warning(
+            f"{zero_area} substations have a zero-area (or invalid) service "
+            "polygon; excluded here since density would be undefined for them."
+        )
+        gdf = gdf[gdf["area_km2"] > 0].copy()
+
+    return gdf[["sub_id", "gdp_total", "POP20", "area_km2"]].rename(columns={"POP20": "population"})
 
 
 def load_critical_facility_counts() -> pd.DataFrame | None:
@@ -252,7 +286,7 @@ def compute_sci(
     merged = eligible.merge(gic, on="sub_id", how="left").merge(econ, on="sub_id", how="left")
 
     missing_gic = merged["gic_risk"].isna().sum()
-    missing_econ = merged[["gdp_total", "population"]].isna().any(axis=1).sum()
+    missing_econ = merged[["gdp_total", "population", "area_km2"]].isna().any(axis=1).sum()
     if missing_gic:
         logger.warning(
             f"{missing_gic} eligible Virginia substations have no GIC risk data -- this is "
@@ -267,20 +301,42 @@ def compute_sci(
             "investigating, not just noting. Check sub_id matching with "
             "va_substation_exposure.gpkg directly."
         )
-    merged[["gic_risk", "gdp_total", "population"]] = merged[
-        ["gic_risk", "gdp_total", "population"]
-    ].fillna(0)
+    merged["gic_risk"] = merged["gic_risk"].fillna(0)
+    merged["gdp_total"] = merged["gdp_total"].fillna(0)
+    merged["population"] = merged["population"].fillna(0)
+    # area_km2 is deliberately NOT filled to 0 here -- dividing by a filled
+    # zero would produce inf/NaN and corrupt normalize_min_max's min/max.
+    # Density is computed only where area_km2 is a valid positive number
+    # (NaN > 0 is False, so merge-missing rows fall through to the 0.0
+    # default below, consistent with every other "missing data scores
+    # zero" case in this function) and area_km2 itself is dropped from the
+    # merge-missing rows' fillna so it stays visible as NaN in the output
+    # for anyone auditing why a given substation scored 0 on this term.
+    valid_area = merged["area_km2"] > 0
+
+    merged["gdp_density"] = 0.0
+    merged["population_density"] = 0.0
+    merged.loc[valid_area, "gdp_density"] = (
+        merged.loc[valid_area, "gdp_total"] / merged.loc[valid_area, "area_km2"]
+    )
+    merged.loc[valid_area, "population_density"] = (
+        merged.loc[valid_area, "population"] / merged.loc[valid_area, "area_km2"]
+    )
 
     merged["gic_risk_norm"] = normalize_min_max(merged["gic_risk"])
-    merged["gdp_norm"] = normalize_min_max(merged["gdp_total"])
-    merged["population_norm"] = normalize_min_max(merged["population"])
+    merged["gdp_norm"] = normalize_min_max(merged["gdp_density"])
+    merged["population_norm"] = normalize_min_max(merged["population_density"])
     merged["econ_exposure_norm"] = (merged["gdp_norm"] + merged["population_norm"]) / 2
     merged["betweenness_norm"] = normalize_min_max(merged["betweenness"])
 
     if critical_load is not None:
         merged = merged.merge(critical_load, on="sub_id", how="left")
         merged["critical_load_count"] = merged["critical_load_count"].fillna(0)
-        merged["critical_load_norm"] = normalize_min_max(merged["critical_load_count"])
+        merged["critical_load_density"] = 0.0
+        merged.loc[valid_area, "critical_load_density"] = (
+            merged.loc[valid_area, "critical_load_count"] / merged.loc[valid_area, "area_km2"]
+        )
+        merged["critical_load_norm"] = normalize_min_max(merged["critical_load_density"])
         weights = WEIGHTS_4
         merged["SCI"] = (
             weights["gic_risk"] * merged["gic_risk_norm"]
@@ -290,7 +346,8 @@ def compute_sci(
         )
         logger.info(f"SCI computed with 4 terms (weights: {weights}).")
         out_cols = [
-            "sub_id", "gic_risk", "gdp_total", "population", "betweenness", "critical_load_count",
+            "sub_id", "gic_risk", "area_km2", "gdp_total", "population", "gdp_density", "population_density",
+            "betweenness", "critical_load_count", "critical_load_density",
             "gic_risk_norm", "econ_exposure_norm", "betweenness_norm", "critical_load_norm", "SCI",
         ]
     else:
@@ -302,8 +359,8 @@ def compute_sci(
         )
         logger.info(f"SCI computed with 3 terms (weights: {weights}); critical_load_i not included.")
         out_cols = [
-            "sub_id", "gic_risk", "gdp_total", "population", "betweenness",
-            "gic_risk_norm", "econ_exposure_norm", "betweenness_norm", "SCI",
+            "sub_id", "gic_risk", "area_km2", "gdp_total", "population", "gdp_density", "population_density",
+            "betweenness", "gic_risk_norm", "econ_exposure_norm", "betweenness_norm", "SCI",
         ]
 
     return merged[out_cols]
