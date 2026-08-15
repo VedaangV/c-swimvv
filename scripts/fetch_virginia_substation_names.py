@@ -1,31 +1,47 @@
 """
 Optional refinement to substation labels used in viz/plot_virginia_criticality.py
-and viz/plot_virginia_gic_risk.py: HIFLD's Electric Substations dataset carries
-real utility-assigned NAME/OWNER fields that OSM's power=substation tagging
-often lacks in this region (most substation features here carry no OSM name
-tag at all, which is why those two scripts fall back to operator/voltage/
-coordinates for so many of the top-ranked substations).
+and viz/plot_virginia_gic_risk.py: pulls real substation names from external
+sources that OSM's power=substation tagging often lacks in this region (most
+substation features here carry no OSM name tag at all, which is why those
+two scripts fall back to operator/voltage/coordinates for so many of the
+top-ranked substations).
 
 MUST BE RUN ON A MACHINE WITH NORMAL INTERNET ACCESS -- see scripts/fetch_
 virginia_critical_loads.py's module docstring for why (this sandbox's
-egress policy blocks every ArcGIS-hosting domain outright). HIFLD_
-SUBSTATIONS_URL below was found via search, not verified by fetching it --
-may be wrong or stale; check the logged record count on your first run. If
-it's 0 or errors out, this dataset may have been restricted the same way
-HIFLD Open's Hospitals dataset was (see fetch_virginia_critical_loads.py's
-docstring) -- report back what you see and this becomes fully droppable
-(both viz scripts already fall back gracefully when this file doesn't
-exist).
+egress policy blocks essentially every external domain outright -- not just
+ArcGIS; en.wikipedia.org and query.wikidata.org were both confirmed
+egress-blocked too while building this).
 
-Nearest-neighbor matched to this project's own sub_id coordinates (from
-va_topology_metrics.csv) within SNAP_DISTANCE_M -- reusing virginia_
-config.py's existing line-endpoint snap tolerance rather than inventing a
-new distance threshold, since it's the same kind of "same real-world
-substation, two different datasets' idea of its exact point" problem
-build_admittance_matrix.py already solves for line endpoints. HIFLD's
-substation points and this project's OSM-derived ones won't share IDs and
-won't be pixel-identical locations, so nearest-within-tolerance is the
-match rule, not exact coordinate equality.
+Two independent sources, tried separately and merged (HIFLD takes priority
+where both matched the same substation, as the more authoritative,
+utility-sourced name over a crowd-sourced one):
+
+1. HIFLD's Electric Substations dataset (HIFLD_SUBSTATIONS_URL, ORNL-
+   hosted, found via search). On the first real run this returned 0 raw
+   features for the whole Virginia bounding box -- confirmed via a direct
+   diagnostic query (not just a schema/field-name mismatch) -- so this
+   dataset may have been restricted the same way HIFLD Open's Hospitals
+   dataset was (see fetch_virginia_critical_loads.py's docstring). Left in
+   place since it's harmless if empty and might work in the future or in
+   a different network environment; do not be surprised if it returns 0.
+2. Wikidata, via its public SPARQL query service: items that are
+   (transitively, via wdt:P31/wdt:P279*) an instance of "electrical
+   substation" (Q174814 -- verified against Wikidata directly via search,
+   not guessed; this transitive path also catches subclasses like
+   "distribution substation") with a coordinate inside Virginia's bounding
+   box. A genuinely different kind of source than HIFLD -- community-
+   maintained, not a federal/DHS-administered dataset -- so it fails (or
+   doesn't) for different reasons. Expect sparse, notability-skewed
+   coverage: Wikidata is not an exhaustive infrastructure inventory, and
+   will likely only have larger/more notable substations, not most of the
+   402 in this project's network.
+
+Both sources nearest-neighbor matched to this project's own sub_id
+coordinates (from va_topology_metrics.csv) within SNAP_DISTANCE_M --
+reusing virginia_config.py's existing line-endpoint snap tolerance rather
+than inventing a new distance threshold, since it's the same kind of "same
+real-world substation, two different datasets' idea of its exact point"
+problem build_admittance_matrix.py already solves for line endpoints.
 
 Usage:
     python scripts/fetch_virginia_substation_names.py
@@ -48,12 +64,24 @@ HIFLD_SUBSTATIONS_URL = (
     "https://services.arcgis.com/G4S1dGvn7PIgYd6Y/ArcGIS/rest/services/"
     "HIFLD_electric_power_substations/FeatureServer/0/query"
 )
-
 # Matched case-insensitively-by-exact-name against whatever field names the
 # service actually uses -- couldn't verify the real schema from this
 # sandbox, so this tries the common HIFLD conventions in order.
 NAME_FIELD_CANDIDATES = ("NAME", "SUBSTATION", "SUBST_NAME", "SS_NAME")
 OWNER_FIELD_CANDIDATES = ("OWNER", "UTILITY_OWNER", "OPERATOR")
+
+WIKIDATA_SPARQL_URL = "https://query.wikidata.org/sparql"
+WIKIDATA_SUBSTATION_QUERY = """
+SELECT ?item ?itemLabel ?coord WHERE {{
+  SERVICE wikibase:box {{
+    ?item wdt:P625 ?coord .
+    bd:serviceParam wikibase:cornerWest "Point({minx} {miny})"^^geo:wktLiteral .
+    bd:serviceParam wikibase:cornerEast "Point({maxx} {maxy})"^^geo:wktLiteral .
+  }}
+  ?item wdt:P31/wdt:P279* wd:Q174814 .
+  SERVICE wikibase:label {{ bd:serviceParam wikibase:language "en". }}
+}}
+"""
 
 PAGE_SIZE = 2000
 
@@ -125,7 +153,7 @@ def _fetch_hifld_substations(bbox: tuple, retries: int = 3) -> pd.DataFrame:
             owner = next((props[c] for c in OWNER_FIELD_CANDIDATES if props.get(c)), None)
             if not name:
                 continue  # nothing to add over the existing OSM-based fallback
-            rows.append({"hifld_name": name, "hifld_owner": owner, "latitude": lat, "longitude": lon})
+            rows.append({"name": name, "owner": owner, "latitude": lat, "longitude": lon})
 
         params["resultOffset"] += len(features)
     else:
@@ -138,62 +166,120 @@ def _fetch_hifld_substations(bbox: tuple, retries: int = 3) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def match_to_virginia_substations(hifld: pd.DataFrame) -> pd.DataFrame:
-    """Nearest-neighbor join HIFLD's named points onto this project's own
-    sub_id coordinates, within SNAP_DISTANCE_M. Returns sub_id, hifld_name,
-    hifld_owner, match_distance_m -- only for substations that found a
-    match. A sub_id absent from the output file means "no HIFLD name
-    available," not an error; callers (the two viz scripts) must keep
-    falling back to their existing OSM-based label in that case.
-    """
-    topo_path = VA_NETWORK_DIR / "va_topology_metrics.csv"
-    if not topo_path.exists():
-        raise FileNotFoundError(f"Missing {topo_path}. Run scripts/build_virginia_network_graph.py first.")
-    topo = pd.read_csv(topo_path)
-    topo["sub_id"] = topo["sub_id"].astype(str)
+def _fetch_wikidata_substations(bbox: tuple, retries: int = 3) -> pd.DataFrame:
+    """Query Wikidata Query Service for electrical-substation-like items
+    (see module docstring for the Q174814 class and why the transitive
+    P31/P279* path is used) with a coordinate inside bbox."""
+    minx, miny, maxx, maxy = bbox
+    query = WIKIDATA_SUBSTATION_QUERY.format(minx=minx, miny=miny, maxx=maxx, maxy=maxy)
+    headers = {"User-Agent": FETCH_USER_AGENT, "Accept": "application/sparql-results+json"}
 
-    ours = gpd.GeoDataFrame(
-        topo[["sub_id"]],
-        geometry=gpd.points_from_xy(topo["longitude"], topo["latitude"]),
-        crs="EPSG:4326",
-    ).to_crs("EPSG:3857")  # meters, so max_distance below is a real distance
+    r = None
+    for attempt in range(retries):
+        try:
+            r = requests.get(
+                WIKIDATA_SPARQL_URL, params={"query": query, "format": "json"}, headers=headers, timeout=90
+            )
+            if r.status_code == 200:
+                break
+            logger.warning(f"Wikidata SPARQL (attempt {attempt + 1}/{retries}) -> HTTP {r.status_code}: {r.text[:300]!r}")
+        except Exception as e:
+            logger.warning(f"Wikidata SPARQL (attempt {attempt + 1}/{retries}) -> {e!r}")
+            r = None
+        time.sleep(3 * (attempt + 1))
+    else:
+        logger.error(f"Wikidata SPARQL: all {retries} attempts failed.")
+        return pd.DataFrame(columns=["name", "latitude", "longitude"])
+
+    try:
+        data = r.json()
+    except Exception as e:
+        logger.error(f"Wikidata SPARQL: response wasn't valid JSON ({e!r}); first 300 chars: {r.text[:300]!r}")
+        return pd.DataFrame(columns=["name", "latitude", "longitude"])
+
+    bindings = data.get("results", {}).get("bindings", [])
+    rows = []
+    for b in bindings:
+        label = b.get("itemLabel", {}).get("value")
+        coord = b.get("coord", {}).get("value")  # "Point(lon lat)"
+        if not label or not coord:
+            continue
+        try:
+            lon_str, lat_str = coord.replace("Point(", "").replace(")", "").split(" ")
+            lon, lat = float(lon_str), float(lat_str)
+        except Exception:
+            continue
+        rows.append({"name": label, "latitude": lat, "longitude": lon})
+
+    logger.info(f"Wikidata: fetched {len(rows)} named substation-like points within the query bbox.")
+    return pd.DataFrame(rows)
+
+
+def _nearest_match(ours_3857: gpd.GeoDataFrame, named_points: pd.DataFrame) -> pd.DataFrame:
+    """Nearest-neighbor join named_points (must have name/latitude/
+    longitude in EPSG:4326) onto ours_3857 (this project's own sub_id
+    points, already projected to EPSG:3857) within SNAP_DISTANCE_M. Returns
+    sub_id, name, match_distance_m -- one row per matched sub_id (closest
+    kept on ties). Empty input -> empty, correctly-shaped output, not an
+    error."""
+    if named_points.empty:
+        return pd.DataFrame(columns=["sub_id", "name", "match_distance_m"])
 
     theirs = gpd.GeoDataFrame(
-        hifld[["hifld_name", "hifld_owner"]],
-        geometry=gpd.points_from_xy(hifld["longitude"], hifld["latitude"]),
+        named_points[["name"]],
+        geometry=gpd.points_from_xy(named_points["longitude"], named_points["latitude"]),
         crs="EPSG:4326",
     ).to_crs("EPSG:3857")
 
-    joined = gpd.sjoin_nearest(ours, theirs, max_distance=SNAP_DISTANCE_M, distance_col="match_distance_m")
-    # sjoin_nearest can return more than one row per left geometry on exact
-    # distance ties -- keep only the single closest match per sub_id.
+    joined = gpd.sjoin_nearest(ours_3857, theirs, max_distance=SNAP_DISTANCE_M, distance_col="match_distance_m")
     joined = joined.sort_values("match_distance_m").drop_duplicates(subset="sub_id", keep="first")
-
-    unmatched = len(ours) - len(joined)
-    logger.info(
-        f"{len(joined)}/{len(ours)} Virginia substations matched to a named HIFLD "
-        f"substation within {SNAP_DISTANCE_M}m ({unmatched} unmatched, will keep "
-        "their existing OSM-based fallback label)."
-    )
-    return joined[["sub_id", "hifld_name", "hifld_owner", "match_distance_m"]]
+    return joined[["sub_id", "name", "match_distance_m"]]
 
 
 def main():
     va_boundary = get_virginia_boundary()
     minx, miny, maxx, maxy = va_boundary.buffer(0.3).bounds
 
+    topo_path = VA_NETWORK_DIR / "va_topology_metrics.csv"
+    if not topo_path.exists():
+        raise FileNotFoundError(f"Missing {topo_path}. Run scripts/build_virginia_network_graph.py first.")
+    topo = pd.read_csv(topo_path)
+    topo["sub_id"] = topo["sub_id"].astype(str)
+    ours_3857 = gpd.GeoDataFrame(
+        topo[["sub_id"]],
+        geometry=gpd.points_from_xy(topo["longitude"], topo["latitude"]),
+        crs="EPSG:4326",
+    ).to_crs("EPSG:3857")
+
     hifld = _fetch_hifld_substations((minx, miny, maxx, maxy))
-    if hifld.empty:
-        raise RuntimeError(
-            "0 named substations fetched from HIFLD -- check HIFLD_SUBSTATIONS_URL "
-            "is still valid (see module docstring); this may mean the dataset has "
-            "been restricted, same as HIFLD Open's Hospitals dataset was."
+    hifld_matches = _nearest_match(ours_3857, hifld)
+    hifld_matches = hifld_matches.assign(source="hifld")
+    logger.info(f"HIFLD: {len(hifld_matches)}/{len(ours_3857)} substations matched within {SNAP_DISTANCE_M}m.")
+
+    wikidata = _fetch_wikidata_substations((minx, miny, maxx, maxy))
+    wikidata_matches = _nearest_match(ours_3857, wikidata)
+    wikidata_matches = wikidata_matches.assign(source="wikidata")
+    logger.info(f"Wikidata: {len(wikidata_matches)}/{len(ours_3857)} substations matched within {SNAP_DISTANCE_M}m.")
+
+    # HIFLD listed first -> keep="first" on a duplicate sub_id prefers the
+    # HIFLD (utility-sourced) name over Wikidata's (crowd-sourced) one.
+    combined = pd.concat([hifld_matches, wikidata_matches], ignore_index=True)
+    combined = combined.drop_duplicates(subset="sub_id", keep="first")
+
+    if combined.empty:
+        logger.warning(
+            "No named substations matched from either source -- writing an "
+            "empty result. Both viz scripts fall back cleanly to OSM-based "
+            "labels when this file is empty/missing."
         )
 
-    matches = match_to_virginia_substations(hifld)
-    out_path = VA_NETWORK_DIR / "va_hifld_substation_names.csv"
-    matches.to_csv(out_path, index=False)
-    logger.info(f"Saved {out_path}")
+    out_path = VA_NETWORK_DIR / "va_substation_names.csv"
+    combined.to_csv(out_path, index=False)
+    logger.info(
+        f"Saved {out_path}: {len(combined)} substations with a real name "
+        f"({(combined['source'] == 'hifld').sum()} from HIFLD, "
+        f"{(combined['source'] == 'wikidata').sum()} from Wikidata)."
+    )
 
 
 if __name__ == "__main__":

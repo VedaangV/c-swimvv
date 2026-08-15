@@ -57,36 +57,36 @@ def _load_substation_labels() -> dict:
     TRAFO_WINDING_R comment) of keeping Virginia-side scripts independent
     of each other rather than cross-importing small helpers.
 
-    Priority: (1) a real utility-assigned name from HIFLD's Electric
-    Substations dataset (scripts/fetch_virginia_substation_names.py's
-    optional va_hifld_substation_names.csv, nearest-neighbor matched to
-    this project's own substations); (2) OSM's own name tag from ss_df.pkl,
-    where present; (3) operator + voltage + coordinates; (4) "Unnamed" +
-    coordinates. Each tier falls through gracefully to the next -- HIFLD
-    names in particular are optional (the fetch script may never have been
-    run, or a given substation may not have matched within the snap
-    tolerance), same "absence isn't an error" pattern used throughout this
-    pipeline's optional data sources.
+    Priority: (1) a real name from an external source (scripts/fetch_
+    virginia_substation_names.py's optional va_substation_names.csv --
+    HIFLD's Electric Substations dataset and/or Wikidata, nearest-neighbor
+    matched to this project's own substations); (2) OSM's own name tag from
+    ss_df.pkl, where present; (3) operator + voltage + coordinates; (4)
+    "Unnamed" + coordinates. Each tier falls through gracefully to the next
+    -- external names in particular are optional (the fetch script may
+    never have been run, or a given substation may not have matched within
+    the snap tolerance), same "absence isn't an error" pattern used
+    throughout this pipeline's optional data sources.
 
     Fallback labels (tiers 3-4) append the raw sub_id -- without it, two
     distinct substations that share a voltage class and both lack an OSM
     name tag produce visually near-identical labels (e.g. two different
     "115000 substation (lat, lon)" bars), which reads as a duplicate/bug on
     a chart even though the small-print coordinates do differ. A real name
-    (HIFLD or OSM) is assumed unique enough to stand alone.
+    (external or OSM) is assumed unique enough to stand alone.
     """
-    hifld_names = {}
-    hifld_path = VA_NETWORK_DIR / "va_hifld_substation_names.csv"
-    if hifld_path.exists():
-        hifld_df = pd.read_csv(hifld_path)
-        hifld_df["sub_id"] = hifld_df["sub_id"].astype(str)
-        hifld_names = dict(zip(hifld_df["sub_id"], hifld_df["hifld_name"]))
-        logger.info(f"Loaded {len(hifld_names)} HIFLD substation names from {hifld_path}.")
+    external_names = {}
+    names_path = VA_NETWORK_DIR / "va_substation_names.csv"
+    if names_path.exists():
+        names_df = pd.read_csv(names_path)
+        names_df["sub_id"] = names_df["sub_id"].astype(str)
+        external_names = dict(zip(names_df["sub_id"], names_df["name"]))
+        logger.info(f"Loaded {len(external_names)} external substation names from {names_path}.")
 
     ss_df_path = VA_DATA_DIR / "grid_processed" / "ss_df.pkl"
     if not ss_df_path.exists():
-        logger.warning(f"{ss_df_path} not found; falling back to HIFLD names (if any) or raw sub_id labels.")
-        return {sid: str(name).strip() for sid, name in hifld_names.items() if pd.notna(name)}
+        logger.warning(f"{ss_df_path} not found; falling back to external names (if any) or raw sub_id labels.")
+        return {sid: str(name).strip() for sid, name in external_names.items() if pd.notna(name)}
 
     with open(ss_df_path, "rb") as f:
         ss_df = pickle.load(f)
@@ -95,8 +95,8 @@ def _load_substation_labels() -> dict:
     for _, row in ss_df.iterrows():
         ss_id = str(row["SS_ID"])
 
-        if ss_id in hifld_names and pd.notna(hifld_names[ss_id]):
-            labels[ss_id] = str(hifld_names[ss_id]).strip()
+        if ss_id in external_names and pd.notna(external_names[ss_id]):
+            labels[ss_id] = str(external_names[ss_id]).strip()
             continue
 
         name = row.get("SS_NAME")
