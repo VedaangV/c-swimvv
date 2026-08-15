@@ -24,17 +24,23 @@ utility-sourced name over a crowd-sourced one):
    dataset was (see fetch_virginia_critical_loads.py's docstring). Left in
    place since it's harmless if empty and might work in the future or in
    a different network environment; do not be surprised if it returns 0.
-2. Wikidata, via its public SPARQL query service: items that are
-   (transitively, via wdt:P31/wdt:P279*) an instance of "electrical
-   substation" (Q174814 -- verified against Wikidata directly via search,
-   not guessed; this transitive path also catches subclasses like
-   "distribution substation") with a coordinate inside Virginia's bounding
-   box. A genuinely different kind of source than HIFLD -- community-
-   maintained, not a federal/DHS-administered dataset -- so it fails (or
-   doesn't) for different reasons. Expect sparse, notability-skewed
-   coverage: Wikidata is not an exhaustive infrastructure inventory, and
-   will likely only have larger/more notable substations, not most of the
-   402 in this project's network.
+2. Wikidata, via its public SPARQL query service: items whose P31
+   ("instance of") is one of a fixed list of substation-type QIDs
+   (WIKIDATA_SUBSTATION_CLASSES -- each confirmed to exist on Wikidata via
+   search, not guessed) with a coordinate inside Virginia's bounding box.
+   The first real run used a wdt:P31/wdt:P279* transitive path instead
+   (catching subclasses automatically) and hit repeated 502/504 errors from
+   Wikidata's query service -- a known WDQS performance pitfall, since "*"
+   transitive property paths are expensive and the query optimizer doesn't
+   reliably apply a geo-box filter first the way the SPARQL syntax implies.
+   The fixed-list VALUES approach avoids that at the cost of only catching
+   substation subtypes explicitly listed, not the full subclass tree. A
+   genuinely different kind of source than HIFLD -- community-maintained,
+   not a federal/DHS-administered dataset -- so it fails (or doesn't) for
+   different reasons. Expect sparse, notability-skewed coverage: Wikidata
+   is not an exhaustive infrastructure inventory, and will likely only have
+   larger/more notable substations, not most of the 402 in this project's
+   network.
 
 Both sources nearest-neighbor matched to this project's own sub_id
 coordinates (from va_topology_metrics.csv) within SNAP_DISTANCE_M --
@@ -71,14 +77,30 @@ NAME_FIELD_CANDIDATES = ("NAME", "SUBSTATION", "SUBST_NAME", "SS_NAME")
 OWNER_FIELD_CANDIDATES = ("OWNER", "UTILITY_OWNER", "OPERATOR")
 
 WIKIDATA_SPARQL_URL = "https://query.wikidata.org/sparql"
+# Fixed list of substation-type QIDs (all confirmed via search, not
+# guessed) instead of a wdt:P31/wdt:P279* transitive closure -- the first
+# real run hit repeated 502/504s from Wikidata's query service, a known
+# WDQS performance pitfall: "*" transitive property paths are expensive to
+# evaluate and the query optimizer doesn't reliably apply the geo-box
+# filter first the way the SPARQL syntax implies, so the engine can end up
+# walking a large chunk of the whole subclass hierarchy. A VALUES-based
+# fixed lookup avoids that entirely at the cost of only catching substation
+# subtypes explicitly listed here.
+WIKIDATA_SUBSTATION_CLASSES = (
+    "wd:Q174814",     # electrical substation
+    "wd:Q478986",     # distribution substation
+    "wd:Q30945590",   # Extra High Voltage Substation
+    "wd:Q1392266",    # mobile electrical substation
+)
 WIKIDATA_SUBSTATION_QUERY = """
 SELECT ?item ?itemLabel ?coord WHERE {{
+  VALUES ?class {{ {classes} }}
+  ?item wdt:P31 ?class .
   SERVICE wikibase:box {{
     ?item wdt:P625 ?coord .
     bd:serviceParam wikibase:cornerWest "Point({minx} {miny})"^^geo:wktLiteral .
     bd:serviceParam wikibase:cornerEast "Point({maxx} {maxy})"^^geo:wktLiteral .
   }}
-  ?item wdt:P31/wdt:P279* wd:Q174814 .
   SERVICE wikibase:label {{ bd:serviceParam wikibase:language "en". }}
 }}
 """
@@ -171,7 +193,9 @@ def _fetch_wikidata_substations(bbox: tuple, retries: int = 3) -> pd.DataFrame:
     (see module docstring for the Q174814 class and why the transitive
     P31/P279* path is used) with a coordinate inside bbox."""
     minx, miny, maxx, maxy = bbox
-    query = WIKIDATA_SUBSTATION_QUERY.format(minx=minx, miny=miny, maxx=maxx, maxy=maxy)
+    query = WIKIDATA_SUBSTATION_QUERY.format(
+        classes=" ".join(WIKIDATA_SUBSTATION_CLASSES), minx=minx, miny=miny, maxx=maxx, maxy=maxy
+    )
     headers = {"User-Agent": FETCH_USER_AGENT, "Accept": "application/sparql-results+json"}
 
     r = None
