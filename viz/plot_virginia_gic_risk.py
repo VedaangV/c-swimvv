@@ -60,6 +60,13 @@ def _load_substation_labels() -> dict:
 
     Falls back to operator + voltage + rounded coordinates when OSM never
     tagged a name -- still far more identifiable than a bare osmid.
+
+    Fallback labels append the raw sub_id -- without it, two distinct
+    substations that share a voltage class and both lack an OSM name
+    produce visually near-identical labels (e.g. two different "115000
+    substation (lat, lon)" entries), which reads as a duplicate/bug on a
+    chart even though the small-print coordinates do differ. A real OSM
+    name is assumed unique enough to stand alone.
     """
     ss_df_path = VA_DATA_DIR / "grid_processed" / "ss_df.pkl"
     if not ss_df_path.exists():
@@ -85,9 +92,9 @@ def _load_substation_labels() -> dict:
         if pd.notna(voltage) and str(voltage).strip() not in ("", "Unknown"):
             parts.append(f"{voltage}")
         if parts:
-            label = " ".join(parts) + f" substation ({row['lat']:.2f}, {row['lon']:.2f})"
+            label = " ".join(parts) + f" substation ({row['lat']:.2f}, {row['lon']:.2f}) [SS {ss_id}]"
         else:
-            label = f"Unnamed substation ({row['lat']:.2f}, {row['lon']:.2f})"
+            label = f"Unnamed substation ({row['lat']:.2f}, {row['lon']:.2f}) [SS {ss_id}]"
         labels[ss_id] = label
 
     return labels
