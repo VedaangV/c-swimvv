@@ -90,19 +90,11 @@ def summarize(df: pd.DataFrame, label: str) -> pd.DataFrame:
     return summary
 
 
-def main():
-    members = set(load_island_members())
-    logger.info(f"Comparing GIC at Island A's {len(members)} members: {sorted(members)}")
-
-    base_df = load_member_gic(VA_GND_GIC_DIR, members, "baseline")
-    isl_df = load_member_gic(VA_ISLAND_A_GND_GIC_DIR, members, "island_a")
-
-    base_summary = summarize(base_df, "baseline")
-    isl_summary = summarize(isl_df, "island_a")
-
-    combined = base_summary.join(isl_summary, how="outer")
-
-    gic_cols = sorted({c.split("GIC_", 1)[1] for c in base_df.columns if c.startswith("GIC_")})
+def build_comparison(combined: pd.DataFrame, gic_cols: list) -> pd.DataFrame:
+    """Reshape the wide baseline_GIC_{period}_{stat} / island_a_GIC_{period}_{stat}
+    summary into a long sub_id x period x stat table with diff/pct_change --
+    shared by this script and scripts/compare_virginia_gic.py (same summarize()
+    output shape, different substation scope)."""
     rows = []
     for period in gic_cols:
         for stat in ("mean", "p95"):
@@ -122,8 +114,23 @@ def main():
                     "baseline_gic": base_val, "island_a_gic": isl_val,
                     "diff": diff, "pct_change": pct,
                 })
+    return pd.DataFrame(rows).sort_values(["sub_id", "period", "stat"])
 
-    result = pd.DataFrame(rows).sort_values(["sub_id", "period", "stat"])
+
+def main():
+    members = set(load_island_members())
+    logger.info(f"Comparing GIC at Island A's {len(members)} members: {sorted(members)}")
+
+    base_df = load_member_gic(VA_GND_GIC_DIR, members, "baseline")
+    isl_df = load_member_gic(VA_ISLAND_A_GND_GIC_DIR, members, "island_a")
+
+    base_summary = summarize(base_df, "baseline")
+    isl_summary = summarize(isl_df, "island_a")
+
+    combined = base_summary.join(isl_summary, how="outer")
+
+    gic_cols = sorted({c.split("GIC_", 1)[1] for c in base_df.columns if c.startswith("GIC_")})
+    result = build_comparison(combined, gic_cols)
     out_path = VA_ECON_DIR / "va_island_a_gic_comparison.csv"
     result.to_csv(out_path, index=False)
     logger.info(f"Saved {out_path} ({len(result)} rows)")
