@@ -70,6 +70,14 @@ VA_FIGURES_DIR = Path(__file__).resolve().parent.parent / "figures" / "virginia"
 VA_ISLAND_A_GIC_DIR = VA_DATA_DIR / "gic_island_a"
 VA_ISLAND_A_GND_GIC_DIR = VA_DATA_DIR / "gnd_gic_island_a"
 
+# Phase 5 -- islanded-topology fragility/econ output. A dedicated
+# subdirectory (not just different filenames within VA_ECON_DIR) because
+# econ/preprocess/p_gic_files.py's DATA_LOC controls both checkpoint
+# batches and final output paths together -- pointing it at a separate
+# directory isolates both at once, matching the plan doc's "va_island_a_econ/
+# subdirectory" design.
+VA_ISLAND_A_ECON_DIR = VA_ECON_DIR / "island_a"
+
 for _d in (
     VA_DATA_DIR,
     VA_NETWORK_DIR,
@@ -80,6 +88,7 @@ for _d in (
     VA_ECON_DIR,
     VA_STATISTICAL_ANALYSIS_DIR,
     VA_FIGURES_DIR,
+    VA_ISLAND_A_ECON_DIR,
     VA_ISLAND_A_GIC_DIR,
     VA_ISLAND_A_GND_GIC_DIR,
 ):

@@ -32,6 +32,19 @@ just not required for this script.)
 
 Untested against real data in this session. Run after
 scripts/run_virginia_fragility.py.
+
+PHASE 5 (ISLANDING_MITIGATION_PLAN.md) EXTENSION: main() takes an optional
+econ_dir override so this same IO analysis can run against Phase 5's
+islanded fragility output (scripts/run_virginia_islanded_fragility.py's
+VA_ISLAND_A_ECON_DIR) instead of the baseline VA_ECON_DIR, both reading
+lpd.load_gic_results() from and writing its four output CSVs to that same
+directory. See scripts/run_virginia_islanded_econ_analysis.py, the thin
+wrapper that calls this with econ_dir=VA_ISLAND_A_ECON_DIR. Default
+(econ_dir=VA_ECON_DIR) reproduces the exact original baseline behavior.
+The national SAM/technology/final-demand tables and _load_national_totals()
+stay untouched regardless -- see the "national tables, regional shock"
+reasoning above, unaffected by which regional shock (baseline or islanded)
+is being driven through them.
 """
 
 import econ.scripts.l_prepr_data as lpd
@@ -49,10 +62,10 @@ from configs.virginia_config import VA_ECON_DIR
 logger = setup_logger(log_file="logs/run_virginia_econ_analysis.log")
 
 
-def main():
-    lpd.DATA_LOC = VA_ECON_DIR
+def main(econ_dir=VA_ECON_DIR):
+    lpd.DATA_LOC = econ_dir
 
-    logger.info("Loading Virginia fragility Monte Carlo results...")
+    logger.info(f"Loading Virginia fragility Monte Carlo results from {econ_dir}...")
     combined_ds, combined_vuln, vuln_table = lpd.load_gic_results()
 
     logger.info("Computing confidence intervals across Virginia's GIC realizations...")
@@ -69,14 +82,15 @@ def main():
     logger.info("Running Leontief consumption + production shock...")
     leontief_cp_df = run_leontief_consumption_production(confidence_df)
 
-    confidence_df.to_csv(VA_ECON_DIR / "va_confidence_intervals.csv", index=False)
-    ghosh_df.to_csv(VA_ECON_DIR / "va_ghosh_results.csv", index=False)
-    leontief_cons_df.to_csv(VA_ECON_DIR / "va_leontief_consumption_results.csv", index=False)
+    econ_dir.mkdir(parents=True, exist_ok=True)
+    confidence_df.to_csv(econ_dir / "va_confidence_intervals.csv", index=False)
+    ghosh_df.to_csv(econ_dir / "va_ghosh_results.csv", index=False)
+    leontief_cons_df.to_csv(econ_dir / "va_leontief_consumption_results.csv", index=False)
     leontief_cp_df.to_csv(
-        VA_ECON_DIR / "va_leontief_consumption_production_results.csv", index=False
+        econ_dir / "va_leontief_consumption_production_results.csv", index=False
     )
 
-    logger.info(f"Saved Virginia economic-impact results to {VA_ECON_DIR}")
+    logger.info(f"Saved Virginia economic-impact results to {econ_dir}")
 
 
 if __name__ == "__main__":

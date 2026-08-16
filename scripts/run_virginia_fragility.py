@@ -46,6 +46,17 @@ before any error.
 
 Run after scripts/run_virginia_areal_interpolation.py and a completed
 scripts/run_virginia_gic.py.
+
+PHASE 5 (ISLANDING_MITIGATION_PLAN.md) EXTENSION: main() takes optional
+gnd_gic_dir/econ_dir overrides so the same fragility Monte Carlo can run
+against Phase 4's islanded GIC output instead of the baseline, writing to
+a separate directory. See scripts/run_virginia_islanded_fragility.py, the
+thin wrapper that calls this with VA_ISLAND_A_GND_GIC_DIR/
+VA_ISLAND_A_ECON_DIR. Defaults (gnd_gic_dir=VA_GND_GIC_DIR, econ_dir=
+VA_ECON_DIR) reproduce the exact original baseline behavior -- econ_dir
+drives both pgf.DATA_LOC (checkpoints + final output) and the exposure
+gpkg lookup, so pointing it at VA_ISLAND_A_ECON_DIR isolates both without
+needing separate output filenames.
 """
 
 import argparse
@@ -59,7 +70,12 @@ from configs.virginia_config import VA_ECON_DIR, VA_GND_GIC_DIR, VA_DATA_DIR
 logger = setup_logger(log_file="logs/run_virginia_fragility.log")
 
 
-def main(limit: int | None = None):
+def main(limit: int | None = None, gnd_gic_dir=VA_GND_GIC_DIR, econ_dir=VA_ECON_DIR):
+    # Always the baseline VA_ECON_DIR, deliberately not econ_dir: exposure
+    # (where population/GDP/facilities sit relative to each substation) is
+    # topology-independent -- cutting Island A's boundary lines doesn't move
+    # anyone's house, so there's exactly one exposure file, shared by both
+    # the baseline and islanded runs, not duplicated per-island.
     exposure_path = VA_ECON_DIR / "va_substation_exposure.gpkg"
     if not exposure_path.exists():
         raise FileNotFoundError(
@@ -68,19 +84,22 @@ def main(limit: int | None = None):
     aggregate_gdf = gpd.read_file(exposure_path)
     aggregate_gdf["sub_id"] = aggregate_gdf["sub_id"].astype(str)
 
-    gic_files = sorted(VA_GND_GIC_DIR.glob("ground_gic*.csv"))
+    gic_files = sorted(gnd_gic_dir.glob("ground_gic*.csv"))
     if not gic_files:
         raise FileNotFoundError(
-            f"No ground_gic*.csv files under {VA_GND_GIC_DIR}. Run scripts/run_virginia_gic.py first."
+            f"No ground_gic*.csv files under {gnd_gic_dir}. Run scripts/run_virginia_gic.py "
+            "(or scripts/run_virginia_islanded_gic.py) first."
         )
     if limit:
         gic_files = gic_files[:limit]
-    logger.info(f"Processing {len(gic_files)} Virginia ground-GIC realizations")
+    logger.info(f"Processing {len(gic_files)} Virginia ground-GIC realizations from {gnd_gic_dir}")
+
+    econ_dir.mkdir(parents=True, exist_ok=True)
 
     # Redirect the module-level path constants process_gic_file()/
     # process_all_files() read as globals — see module docstring.
     pgf.DATA_DIR = VA_DATA_DIR
-    pgf.DATA_LOC = VA_ECON_DIR
+    pgf.DATA_LOC = econ_dir
     pgf.OUTPUT_FILES = {
         **pgf.OUTPUT_FILES,
         "regular_all": "va_scenario_summary_gnd_gic.nc",
@@ -89,8 +108,8 @@ def main(limit: int | None = None):
 
     pgf.process_all_files(gic_files, aggregate_gdf, workers=1)
 
-    logger.info(f"Saved {VA_ECON_DIR / 'va_scenario_summary_gnd_gic.nc'}")
-    logger.info(f"Saved {VA_ECON_DIR / 'va_vulnerable_substations_gnd_gic'}")
+    logger.info(f"Saved {econ_dir / 'va_scenario_summary_gnd_gic.nc'}")
+    logger.info(f"Saved {econ_dir / 'va_vulnerable_substations_gnd_gic'}")
 
 
 if __name__ == "__main__":
