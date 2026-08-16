@@ -78,6 +78,26 @@ VA_ISLAND_A_GND_GIC_DIR = VA_DATA_DIR / "gnd_gic_island_a"
 # subdirectory" design.
 VA_ISLAND_A_ECON_DIR = VA_ECON_DIR / "island_a"
 
+
+def get_island_dirs(island_id: str) -> dict:
+    """gic_dir/gnd_gic_dir/econ_dir for a given island id ("a", "b", ...) --
+    island_id="a" resolves to exactly VA_ISLAND_A_GIC_DIR/VA_ISLAND_A_GND_GIC_DIR/
+    VA_ISLAND_A_ECON_DIR (kept as standalone constants too, since Island A's
+    already-computed results and a good deal of already-written code
+    reference them directly -- this is for Phase 6's Island B and beyond,
+    added once a second real island made copy-pasting three more constants
+    and three more near-identical wrapper scripts per island clearly the
+    wrong call vs. parameterizing once)."""
+    dirs = {
+        "gic_dir": VA_DATA_DIR / f"gic_island_{island_id}",
+        "gnd_gic_dir": VA_DATA_DIR / f"gnd_gic_island_{island_id}",
+        "econ_dir": VA_ECON_DIR / f"island_{island_id}",
+    }
+    for d in dirs.values():
+        d.mkdir(parents=True, exist_ok=True)
+    return dirs
+
+
 for _d in (
     VA_DATA_DIR,
     VA_NETWORK_DIR,

@@ -93,6 +93,7 @@ Usage:
     python scripts/select_virginia_island.py
 """
 
+import argparse
 import json
 import pickle
 
@@ -247,14 +248,45 @@ def select_island(
     }
 
 
-def main():
+def _excluded_nodes_for(G: nx.Graph, island_ids: list) -> set:
+    """Phase 6: members + boundary neighbors of each prior island, so a
+    second (third, ...) island can't overlap or sit immediately adjacent
+    to one already selected -- "excluded_nodes... Island A's members and
+    boundary, keeping the two structurally independent" per this module's
+    own ELIGIBILITY section above. Boundary neighbors (not just members)
+    are excluded because seeding right next to Island A's cut wouldn't be
+    a structurally independent second island, just an extension of the
+    first one by another name."""
+    excluded = set()
+    for island_id in island_ids:
+        path = VA_NETWORK_DIR / f"va_island_{island_id}.json"
+        if not path.exists():
+            raise FileNotFoundError(f"Missing {path} -- can't exclude Island {island_id}'s footprint.")
+        with open(path) as f:
+            prior = json.load(f)
+        members = set(prior["members"])
+        boundary = _boundary_edges(G, members)
+        boundary_neighbors = {v if u in members else u for u, v in boundary}
+        excluded |= members | boundary_neighbors
+    return excluded
+
+
+def main(island_id: str = "a", exclude_island_ids: list | None = None):
     G = load_graph()
     sci_lookup = load_sci_lookup()
     logger.info(f"{len(sci_lookup)} eligible substations to seed/grow from.")
 
-    island = select_island(G, sci_lookup)
+    excluded_nodes = None
+    if exclude_island_ids:
+        excluded_nodes = _excluded_nodes_for(G, exclude_island_ids)
+        logger.info(
+            f"Excluding {len(excluded_nodes)} substations (members + boundary neighbors) "
+            f"from prior island(s) {exclude_island_ids}."
+        )
 
-    out_path = VA_NETWORK_DIR / "va_island_a.json"
+    island = select_island(G, sci_lookup, excluded_nodes=excluded_nodes)
+
+    out_path = VA_NETWORK_DIR / f"va_island_{island_id}.json"
     with open(out_path, "w") as f:
         # allow_nan=False as a backstop: _sanitize_for_json should already
         # have removed every inf, so this raises loudly instead of writing
@@ -263,7 +295,7 @@ def main():
     logger.info(f"Saved {out_path}")
 
     logger.info(
-        f"Island A: seed={island['seed']}, {island['member_count']} members, "
+        f"Island {island_id}: seed={island['seed']}, {island['member_count']} members, "
         f"{island['boundary_line_count']} boundary lines cut "
         f"(voltage-weighted cost {island['voltage_weighted_cost']:.2f}), "
         f"final ratio {island['final_ratio']}."
@@ -277,4 +309,12 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="Seeded region-growing islanding algorithm.")
+    parser.add_argument("--island", type=str, default="a", help="Island id to select and save, e.g. 'a' or 'b'.")
+    parser.add_argument(
+        "--exclude", type=str, nargs="*", default=None,
+        help="Prior island id(s) whose members + boundary neighbors are ineligible for this "
+             "island (Phase 6: e.g. '--island b --exclude a').",
+    )
+    args = parser.parse_args()
+    main(island_id=args.island, exclude_island_ids=args.exclude)
