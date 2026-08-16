@@ -447,6 +447,10 @@ forcing a second island that isn't really independent.
 
 **First thing to cut if behind schedule.**
 
+**Reframed from "does the method generalize" to "does islanding help at all here."** Island A's real result (Phase 4/5, above) is net-negative for whole-Virginia $/day in every scenario checked, with the redistribution traced to a small, consistent set of substations (led by `96396693`) 25-106 km from Island A -- too far for a local boundary tweak to route around. Island B is now the direct next data point for the open question from that finding: is this a property of cutting near `708152212` specifically, or of islanding anything in this part of the network. Same purpose as originally planned (a second, independent island, not overlapping or adjacent to Island A), just a sharper reason to run it.
+
+**Implemented**: `scripts/select_virginia_island.py` now takes `island_id`/`exclude_island_ids` (`--island b --exclude a`), reusing `select_island()`'s existing `excluded_nodes` parameter -- built for exactly this. Every downstream Phase 4/5 script (`run_virginia_islanded_gic.py`, `run_virginia_islanded_fragility.py`, `run_virginia_islanded_econ_analysis.py`, `compare_island_gic.py`, `compare_virginia_gic.py`) generalized to take `--island b` the same way, verified against fixtures to reproduce Island A's exact original paths/behavior when called with no arguments. **Not yet run against real data** -- next step, on the user's machine.
+
 ## Phase 7 — Figures and writeup (Day 10)
 
 - Criticality map (Phase 2's `plot_virginia_criticality.py`).
