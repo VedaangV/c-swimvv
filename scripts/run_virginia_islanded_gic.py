@@ -18,25 +18,32 @@ hypothetical one) worth running through the identical pipeline, at which
 point copy-pasting this file per island was clearly the wrong call.
 
 SAFETY CHECKS (per ISLANDING_MITIGATION_PLAN.md Phase 4's stated risks):
-1. Island A's members must form a single connected component in the
-   topology graph via their *internal* edges alone (boundary edges
-   excluded from this check by definition -- they're the cut). If not,
-   that's a Phase 3 correctness bug, not just an interesting network fact
-   -- hard-fails rather than silently solving GIC on a bogus topology. By
-   construction this should always hold (region-growing only ever adds a
-   node adjacent to the current boundary), so a failure here means
-   something upstream changed in a way that broke that invariant.
-2. How the *rest* of the network (everything outside Island A) responds
-   to the cut is logged, not gated -- cutting boundary edges necessarily
-   makes Island A its own connected component, but whether some outside
-   substation loses its only path to the rest of PJM through a route that
-   happened to run through Island A is a legitimate thing to know, not
-   something to block on. The existing keep_nodes_with_ground() /
-   non-zero-row filtering already in run_virginia_gic.py's Monte Carlo
-   loop handles any resulting fully-isolated node numerically (same
-   mechanism that already handles orphaned nodes in the baseline run) --
-   nothing new needed there, this check is purely diagnostic visibility
-   into whether that machinery is doing something unexpected on this run.
+1. Every constituent sub-island's own members must form a single connected
+   component in the topology graph via their *internal* edges alone
+   (boundary edges excluded from this check by definition -- they're the
+   cut). If not, that's a Phase 3 correctness bug, not just an interesting
+   network fact -- hard-fails rather than silently solving GIC on a bogus
+   topology. By construction this should always hold (region-growing only
+   ever adds a node adjacent to the current boundary), so a failure here
+   means something upstream changed in a way that broke that invariant.
+   For a single island (the normal case), this is just "members form one
+   component." For a combined multi-region island (scripts/combine_
+   islands.py's output, e.g. Island A and B run simultaneously), each
+   sub-island is checked separately -- the *union* is never expected to be
+   one component, since they're deliberately separate, non-adjacent
+   regions cut at the same time, not one contiguous island.
+2. How the *rest* of the network (everything outside every sub-island)
+   responds to the cut is logged, not gated -- cutting boundary edges
+   necessarily makes each sub-island its own connected component, but
+   whether some outside substation loses its only path to the rest of PJM
+   through a route that happened to run through one of them is a
+   legitimate thing to know, not something to block on. The existing
+   keep_nodes_with_ground() / non-zero-row filtering already in
+   run_virginia_gic.py's Monte Carlo loop handles any resulting fully-
+   isolated node numerically (same mechanism that already handles orphaned
+   nodes in the baseline run) -- nothing new needed there, this check is
+   purely diagnostic visibility into whether that machinery is doing
+   something unexpected on this run.
 
 Run after scripts/select_virginia_island.py (and, as always,
 scripts/run_virginia_admittance.py). Output: get_island_dirs(island_id)'s
@@ -71,40 +78,49 @@ def load_island(island_id: str = "a") -> dict:
         return json.load(f)
 
 
-def check_island_connectivity(G: nx.Graph, members: set, boundary: set, island_id: str = "a") -> dict:
-    """Returns a dict of diagnostics; raises if the island's own members
-    aren't internally connected (see module docstring, check 1). The rest
-    -- how the outside network responds to the cut -- is reported, not
-    enforced (check 2)."""
-    subG = G.subgraph(members)
-    island_connected = nx.is_connected(subG) if len(members) > 0 else True
-    if not island_connected:
-        raise ValueError(
-            f"Island {island_id}'s {len(members)} members are NOT internally connected via "
-            "their own edges (independent of the boundary cut) -- this should be structurally "
-            "impossible given how scripts/select_virginia_island.py grows islands (every added "
-            "node is adjacent to the current boundary), so this indicates a real bug upstream, "
-            "not just an unusual topology. Aborting rather than solving GIC on a bogus cut."
-        )
+def check_island_connectivity(
+    G: nx.Graph, members: set, boundary: set, island_id: str = "a",
+    component_groups: list | None = None,
+) -> dict:
+    """Returns a dict of diagnostics; raises if any constituent sub-island's
+    own members aren't internally connected (see module docstring, check
+    1). The rest -- how the outside network responds to the cut -- is
+    reported, not enforced (check 2).
+
+    component_groups: for a combined multi-region island (scripts/combine_
+    islands.py), the list of each sub-island's own member set -- checked
+    individually for internal connectivity, instead of treating the full
+    `members` union as one blob (which it structurally isn't -- separate,
+    non-adjacent regions cut simultaneously, not one contiguous island).
+    Defaults to [members] (the normal single-island case, and the exact
+    original behavior)."""
+    component_groups = component_groups or [members]
+
+    for group in component_groups:
+        subG = G.subgraph(group)
+        if len(group) > 0 and not nx.is_connected(subG):
+            raise ValueError(
+                f"Island {island_id}: a sub-island's {len(group)} members are NOT internally "
+                "connected via their own edges (independent of the boundary cut) -- this should "
+                "be structurally impossible given how scripts/select_virginia_island.py grows "
+                "islands (every added node is adjacent to the current boundary), so this "
+                "indicates a real bug upstream, not just an unusual topology. Aborting rather "
+                "than solving GIC on a bogus cut."
+            )
+    island_connected = True  # every group passed, or would have raised above
 
     G_cut = G.copy()
     G_cut.remove_edges_from(boundary)
     n_components_before = nx.number_connected_components(G)
     n_components_after = nx.number_connected_components(G_cut)
 
-    island_is_own_component = False
-    outside_fragmented = False
-    for comp in nx.connected_components(G_cut):
-        if comp == members:
-            island_is_own_component = True
-        elif not comp.isdisjoint(members):
-            # partial overlap should be impossible if island_connected passed above
-            island_is_own_component = False
-            break
+    cut_components = list(nx.connected_components(G_cut))
+    groups_that_are_own_component = sum(1 for group in component_groups if group in cut_components)
+    island_is_own_component = groups_that_are_own_component == len(component_groups)
 
-    non_island_components = [c for c in nx.connected_components(G_cut) if c.isdisjoint(members)]
-    if len(non_island_components) > 1:
-        outside_fragmented = True
+    non_island_components = [c for c in cut_components if c.isdisjoint(members)]
+    outside_fragmented = len(non_island_components) > 1
+    if outside_fragmented:
         sizes = sorted((len(c) for c in non_island_components), reverse=True)
         logger.warning(
             f"Cutting Island {island_id}'s boundary split the REST of the network into "
@@ -118,8 +134,8 @@ def check_island_connectivity(G: nx.Graph, members: set, boundary: set, island_i
 
     logger.info(
         f"Connectivity after cut: {n_components_before} -> {n_components_after} components. "
-        f"Island {island_id} forms its own separate component: {island_is_own_component}. "
-        f"Rest of network fragmented further: {outside_fragmented}."
+        f"{groups_that_are_own_component}/{len(component_groups)} sub-island(s) form their own "
+        f"separate component. Rest of network fragmented further: {outside_fragmented}."
     )
     return {
         "island_internally_connected": island_connected,
@@ -135,10 +151,13 @@ def main(start_idx: int = 0, end_idx: int | None = None, island_id: str = "a"):
     members = set(island["members"])
     boundary_line_ids = {str(x) for x in island["boundary_line_ids"]}
     dirs = get_island_dirs(island_id)
+    component_groups = (
+        [set(v) for v in island["sub_islands"].values()] if "sub_islands" in island else None
+    )
 
     G = load_graph()
     boundary_edges = _boundary_edges(G, members)
-    check_island_connectivity(G, members, boundary_edges, island_id)
+    check_island_connectivity(G, members, boundary_edges, island_id, component_groups)
 
     logger.info(
         f"Re-solving GIC with Island {island_id} ({len(members)} members) boundary removed: "
