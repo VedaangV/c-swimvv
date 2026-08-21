@@ -1,12 +1,25 @@
 """
-Bonus check for Phase 3's Island A (ISLANDING_MITIGATION_PLAN.md): does the
-island contain any existing generation capacity? Not required for the core
-protective-islanding methodology -- Phase 3/4/5 model islanding as a
-temporary, planned disconnection during a storm's peak-risk window (see the
-plan doc's Phase 5 section and the NZ precedent it's grounded in), which
-doesn't require the island to stay powered. This is purely a "does it turn
-out Island A already has some capacity" factual data point, worth reporting
-if true, not a design assumption anything else depends on.
+EIA-860 generation-capacity matching for Virginia substations.
+
+Originally a bonus post-hoc check for Island A ("does it happen to have
+generation capacity" -- not required for the core protective-islanding
+methodology, which models islanding as a temporary planned disconnection,
+not a requirement to stay powered). Reading the actual NZ precedent paper
+(arXiv:2507.12495) changed that: its own strongest scenario (Scenario 5)
+isn't a generic protective cut -- it's a deliberately engineered island
+anchored on Manapouri, a real hydro generation site, reconfigured so that
+generation directly supplies the protected load (the Tiwai Point smelter)
+regardless of what the wider grid is doing. That's a materially different,
+and evidently more effective, kind of islanding than "cut boundary lines
+around a high-risk node and hope for the best."
+
+compute_generation_by_substation() (added for this) generalizes
+match_generation_to_island() to the whole eligible substation set, not
+just one already-selected island -- used by scripts/select_virginia_
+island.py's require_local_generation option to anchor SEED selection on
+substations with real nearby generation, the same way Manapouri anchored
+Scenario 5, rather than checking for generation only after an island is
+already finalized.
 
 MUST BE RUN ON A MACHINE WITH NORMAL INTERNET ACCESS to download EIA-860
 first -- this script itself only reads local files, no live fetch, since
@@ -187,6 +200,27 @@ def match_generation_to_island(island_members: list, member_coords: pd.DataFrame
         f"within {SNAP_DISTANCE_M}m."
     )
     return {"generation_capacity_mw": total_mw, "generators": gen_list, "checked": True}
+
+
+def compute_generation_by_substation(sub_coords: pd.DataFrame) -> dict:
+    """sub_coords: sub_id, latitude, longitude for any set of substations
+    (not just an already-selected island -- typically every eligible
+    substation from va_topology_metrics.csv). Returns {sub_id: capacity_mw}
+    for substations with matched EIA-860 generation within
+    SNAP_DISTANCE_M; substations with none are simply absent from the
+    dict (not zero-valued entries), so callers should use .get(sub_id, 0.0).
+
+    Reuses match_generation_to_island() unmodified -- that function only
+    cares about the coordinates it's given, not whether they represent a
+    finalized island or the full candidate pool, so no separate matching
+    logic is needed here."""
+    result = match_generation_to_island(list(sub_coords["sub_id"]), sub_coords)
+    if not result["checked"]:
+        return {}
+    capacity_by_sub = {}
+    for gen in result["generators"]:
+        capacity_by_sub[gen["sub_id"]] = capacity_by_sub.get(gen["sub_id"], 0.0) + gen["capacity_mw"]
+    return capacity_by_sub
 
 
 def main():

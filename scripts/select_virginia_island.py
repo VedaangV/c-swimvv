@@ -89,8 +89,32 @@ too. `select_island()` also accepts an `excluded_nodes` set so Phase 6's
 second island can exclude Island A's members and boundary, keeping the
 two structurally independent (per the plan's second-island design).
 
+GENERATION-ANCHORED SEEDING (require_local_generation)
+--------------------------------------------------------
+Added after reading the NZ precedent paper (arXiv:2507.12495) in full:
+its strongest scenario (Scenario 5) isn't a generic protective cut, it's
+an island deliberately anchored on Manapouri, a real hydro generation
+site, so the protected load stays served by local generation regardless
+of what the wider grid does. Every island this project selected before
+this point (A, B, C, D, E) had zero local generation -- islanding them
+just isolates load from the grid's supply, it doesn't substitute a local
+one, which is a materially weaker form of protection than Scenario 5's.
+
+`select_island()`'s `generation_lookup`/`min_generation_mw` params only
+constrain the SEED, not the whole island: eligible_nodes for seeding is
+narrowed to substations with >= min_generation_mw of nearby EIA-860
+capacity (via scripts/check_island_generation.py's
+compute_generation_by_substation()), but growth candidates afterward are
+unconstrained, same as before. This mirrors Manapouri's actual role --
+it's the anchor the island is built around, not a requirement every
+member independently satisfy; requiring every member to have its own
+generation would be a much stronger (and for a transmission substation
+graph, largely unsatisfiable) constraint that Scenario 5 itself doesn't
+impose either.
+
 Usage:
     python scripts/select_virginia_island.py
+    python scripts/select_virginia_island.py --island f --require-local-generation --min-generation-mw 50
 """
 
 import argparse
@@ -102,6 +126,7 @@ import pandas as pd
 
 from configs import setup_logger
 from configs.virginia_config import VA_ECON_DIR, VA_NETWORK_DIR
+import scripts.check_island_generation as gen_check
 
 logger = setup_logger(log_file="logs/select_virginia_island.log")
 
@@ -171,17 +196,35 @@ def select_island(
     sci_lookup: dict,
     excluded_nodes: set | None = None,
     max_size: int = MAX_ISLAND_SIZE,
+    generation_lookup: dict | None = None,
+    min_generation_mw: float = 0.0,
 ) -> dict:
     """Run the seeded greedy region-growing algorithm once. Returns a dict
     with seed, members, boundary edges/lines, final value/cost/ratio, and
     a step-by-step growth trace (for the methods section: which substation
-    was added at each step and why)."""
+    was added at each step and why).
+
+    generation_lookup/min_generation_mw (see module docstring's GENERATION-
+    ANCHORED SEEDING) restrict only the SEED choice to substations with
+    real nearby EIA-860 generation capacity -- growth afterward is
+    unconstrained, same as the base algorithm."""
     excluded_nodes = excluded_nodes or set()
     eligible_nodes = set(sci_lookup) - excluded_nodes
     if not eligible_nodes:
         raise ValueError("No eligible substations left to seed from (excluded_nodes covers everything).")
 
-    seed = max(eligible_nodes, key=lambda n: sci_lookup[n])
+    seed_candidates = eligible_nodes
+    if generation_lookup is not None:
+        seed_candidates = {n for n in eligible_nodes if generation_lookup.get(n, 0.0) >= min_generation_mw}
+        if not seed_candidates:
+            raise ValueError(
+                f"require_local_generation: no eligible substation has >= {min_generation_mw} MW "
+                "of nearby EIA-860 generation. Lower --min-generation-mw or check that EIA-860 "
+                "was downloaded into data/virginia/network/raw_eia860/ (see scripts/"
+                "check_island_generation.py's module docstring)."
+            )
+
+    seed = max(seed_candidates, key=lambda n: sci_lookup[n])
     island = {seed}
     trace = []
 
@@ -189,8 +232,12 @@ def select_island(
     cost = _total_cost(G, boundary)
     value = sci_lookup[seed]
     ratio = value / cost if cost > 0 else float("inf")
+    seed_reason = "seed (argmax SCI)" if generation_lookup is None else (
+        f"seed (argmax SCI among substations with >= {min_generation_mw} MW local generation, "
+        f"{generation_lookup.get(seed, 0.0):.1f} MW nearby)"
+    )
     trace.append({
-        "step": 0, "added": seed, "reason": "seed (argmax SCI)",
+        "step": 0, "added": seed, "reason": seed_reason,
         "island_size": 1, "value": value, "cost": cost, "ratio": ratio,
     })
 
@@ -271,7 +318,12 @@ def _excluded_nodes_for(G: nx.Graph, island_ids: list) -> set:
     return excluded
 
 
-def main(island_id: str = "a", exclude_island_ids: list | None = None):
+def main(
+    island_id: str = "a",
+    exclude_island_ids: list | None = None,
+    require_local_generation: bool = False,
+    min_generation_mw: float = 0.0,
+):
     G = load_graph()
     sci_lookup = load_sci_lookup()
     logger.info(f"{len(sci_lookup)} eligible substations to seed/grow from.")
@@ -284,7 +336,31 @@ def main(island_id: str = "a", exclude_island_ids: list | None = None):
             f"from prior island(s) {exclude_island_ids}."
         )
 
-    island = select_island(G, sci_lookup, excluded_nodes=excluded_nodes)
+    generation_lookup = None
+    if require_local_generation:
+        topo_path = VA_NETWORK_DIR / "va_topology_metrics.csv"
+        if not topo_path.exists():
+            raise FileNotFoundError(f"Missing {topo_path}. Run scripts/build_virginia_network_graph.py first.")
+        topo = pd.read_csv(topo_path)
+        topo["sub_id"] = topo["sub_id"].astype(str)
+        sub_coords = topo[topo["sub_id"].isin(sci_lookup)][["sub_id", "latitude", "longitude"]]
+        generation_lookup = gen_check.compute_generation_by_substation(sub_coords)
+        if not generation_lookup:
+            raise ValueError(
+                "require_local_generation was set but no EIA-860 generation data is available. "
+                "Download EIA-860 into data/virginia/network/raw_eia860/ first -- see "
+                "scripts/check_island_generation.py's module docstring."
+            )
+        logger.info(
+            f"require_local_generation: {len(generation_lookup)}/{len(sci_lookup)} eligible "
+            f"substations have matched EIA-860 generation nearby; seed will be restricted to "
+            f"those with >= {min_generation_mw} MW."
+        )
+
+    island = select_island(
+        G, sci_lookup, excluded_nodes=excluded_nodes,
+        generation_lookup=generation_lookup, min_generation_mw=min_generation_mw,
+    )
 
     out_path = VA_NETWORK_DIR / f"va_island_{island_id}.json"
     with open(out_path, "w") as f:
@@ -316,5 +392,21 @@ if __name__ == "__main__":
         help="Prior island id(s) whose members + boundary neighbors are ineligible for this "
              "island (Phase 6: e.g. '--island b --exclude a').",
     )
+    parser.add_argument(
+        "--require-local-generation", action="store_true",
+        help="Restrict SEED choice (not growth) to substations with real nearby EIA-860 "
+             "generation capacity, anchoring the island the way Manapouri anchors NZ's "
+             "Scenario 5 (arXiv:2507.12495). Requires EIA-860 downloaded into "
+             "data/virginia/network/raw_eia860/.",
+    )
+    parser.add_argument(
+        "--min-generation-mw", type=float, default=0.0,
+        help="Minimum nearby EIA-860 generation capacity (MW) for a substation to be eligible "
+             "as SEED when --require-local-generation is set. Default 0.0 (any nonzero match).",
+    )
     args = parser.parse_args()
-    main(island_id=args.island, exclude_island_ids=args.exclude)
+    main(
+        island_id=args.island, exclude_island_ids=args.exclude,
+        require_local_generation=args.require_local_generation,
+        min_generation_mw=args.min_generation_mw,
+    )
