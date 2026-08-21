@@ -76,61 +76,15 @@ import networkx as nx
 import pandas as pd
 
 from configs import setup_logger
-from configs.virginia_config import VA_ADMITTANCE_DIR, VA_NETWORK_DIR, VA_ECON_DIR
-from scripts.select_virginia_island import load_graph, _boundary_edges
+from configs.virginia_config import VA_NETWORK_DIR, VA_ECON_DIR
+from scripts.island_graph_utils import (
+    load_graph,
+    boundary_edges as _boundary_edges,
+    attach_conductance,
+    largest_component_subgraph,
+)
 
 logger = setup_logger(log_file="logs/check_redistribution_proxy.log")
-
-
-def attach_conductance(G: nx.Graph) -> nx.Graph:
-    """Sum 1/R (parallel-resistor conductance) over each edge's line_ids,
-    using the real per-line resistances from transmission_lines.csv."""
-    lines = pd.read_csv(VA_ADMITTANCE_DIR / "transmission_lines.csv")
-    lines["name"] = lines["name"].astype(str)
-    r_lookup = dict(zip(lines["name"], lines["R"]))
-
-    missing = 0
-    for _, _, data in G.edges(data=True):
-        line_ids = data.get("line_ids", [])
-        conductance = 0.0
-        for lid in line_ids:
-            r = r_lookup.get(str(lid))
-            if r is None or r <= 0:
-                missing += 1
-                continue
-            conductance += 1.0 / r
-        # A zero/near-zero conductance edge would make the Laplacian
-        # singular in a way current_flow_betweenness_centrality can't
-        # handle gracefully -- floor it instead of dropping the edge
-        # entirely (dropping could disconnect something that's supposed
-        # to still be connected).
-        data["conductance"] = conductance if conductance > 0 else 1e-9
-    if missing:
-        logger.warning(
-            f"{missing} line_ids had no matching/valid R in transmission_lines.csv "
-            "(floored to near-zero conductance rather than dropped)."
-        )
-    return G
-
-
-def largest_component_subgraph(G: nx.Graph, exclude: set | None = None) -> nx.Graph:
-    """current_flow_betweenness_centrality requires a connected graph --
-    restrict to the largest connected component after optionally removing
-    a node set (an island's members, once its boundary is cut)."""
-    exclude = exclude or set()
-    H = G.copy()
-    H.remove_nodes_from(exclude)
-    components = list(nx.connected_components(H))
-    if not components:
-        raise ValueError("Graph has no nodes left after exclusion.")
-    largest = max(components, key=len)
-    if len(components) > 1:
-        logger.info(
-            f"{len(components)} components after exclusion; using the largest "
-            f"({len(largest)} nodes, {sum(len(c) for c in components) - len(largest)} "
-            "nodes in smaller components dropped from this proxy's comparison)."
-        )
-    return H.subgraph(largest).copy()
 
 
 def main(island_id: str = "a", top_n: int = 25, solver: str = "lu"):

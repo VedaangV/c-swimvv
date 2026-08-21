@@ -17,39 +17,11 @@ Reports, without running any island-selection or heavy pipeline stage:
 - for a few SCI percentile cutoffs (p50/p75/p90/p95), how many of the
   substations above that cutoff also have generation nearby
 
-DEMAND PROXY (population-based, order-of-magnitude only)
-----------------------------------------------------------
-The pipeline has no per-substation electrical load (MW) data anywhere --
-econ_exposure_i (compute_virginia_criticality.py) uses population/GDP
-*density* as an economic-impact proxy, not electrical demand. There is
-no load-flow model here, so "does this substation's nearby generation
-actually cover its own demand" can't be answered with real data already
-on hand. This adds a rough proxy instead of leaving the question
-unanswered: each substation's Voronoi-cell population (already computed
-for econ_exposure_i, reused via compute_virginia_criticality.load_
-economic_exposure()) is converted to an estimated average continuous MW
-demand using a single national per-capita consumption constant
-(US_AVG_ELECTRICITY_KWH_PER_CAPITA_YEAR -- commonly cited order-of-
-magnitude figure for combined residential+commercial+industrial U.S.
-electricity use, NOT a Virginia-specific or substation-specific
-measurement), then inflated to a rough peak-demand estimate via
-US_TYPICAL_ANNUAL_LOAD_FACTOR (average/peak ratio -- storms don't
-necessarily hit at off-peak load, so sizing against peak, not average,
-is the conservative direction).
-
-This is explicitly NOT a real load estimate -- it ignores the
-substation's actual customer mix (a residential feeder and an
-industrial substation with the same population would have very
-different real demand), any diurnal/seasonal timing, and any
-transmission losses. It exists only to catch an order-of-magnitude
-mismatch (a 20 MW plant matched to a substation whose Voronoi cell
-implies ~500 MW of demand is obviously not self-sufficient; one matched
-to a cell implying ~5 MW might be) before spending an overnight run on
-a candidate where the generation clearly couldn't cover the load at
-all. A real substation-level load estimate (e.g. from EIA-861 utility
-sales data or actual PJM/utility load data, if available) would be a
-strictly better input than this if the user has access to it -- this
-proxy is a stand-in for that, not a permanent replacement.
+DEMAND PROXY
+------------
+Uses scripts/virginia_demand_proxy.py's population-based demand estimate
+(order-of-magnitude only, not a real load model -- see that module's
+docstring) to compute generation_covers_peak_demand_ratio per substation.
 
 Usage:
     python scripts/check_generation_sci_overlap.py
@@ -63,14 +35,9 @@ import pandas as pd
 from configs import setup_logger
 from configs.virginia_config import VA_ECON_DIR, VA_NETWORK_DIR
 import scripts.check_island_generation as gen_check
-import scripts.compute_virginia_criticality as crit
+from scripts.virginia_demand_proxy import estimate_demand_mw, load_population_lookup
 
 logger = setup_logger(log_file="logs/check_generation_sci_overlap.log")
-
-# See DEMAND PROXY in the module docstring -- rough order-of-magnitude
-# constants only, not a real load estimate.
-US_AVG_ELECTRICITY_KWH_PER_CAPITA_YEAR = 12000.0
-US_TYPICAL_ANNUAL_LOAD_FACTOR = 0.6
 
 
 def load_sci_table() -> pd.DataFrame:
@@ -89,23 +56,6 @@ def load_coords() -> pd.DataFrame:
     df = pd.read_csv(path)
     df["sub_id"] = df["sub_id"].astype(str)
     return df
-
-
-def load_population_lookup() -> dict:
-    """sub_id -> population, reusing compute_virginia_criticality.py's
-    econ-exposure loader (same source econ_exposure_i already draws
-    population from) rather than re-deriving it."""
-    exposure = crit.load_economic_exposure()
-    return dict(zip(exposure["sub_id"], exposure["population"]))
-
-
-def estimate_demand_mw(population: pd.Series) -> tuple:
-    """See module docstring's DEMAND PROXY -- rough order-of-magnitude
-    average and peak MW estimates from population alone, not a real load
-    estimate. Returns (avg_demand_mw, peak_demand_mw) as parallel Series."""
-    avg_demand_mw = population * US_AVG_ELECTRICITY_KWH_PER_CAPITA_YEAR / 8760 / 1000
-    peak_demand_mw = avg_demand_mw / US_TYPICAL_ANNUAL_LOAD_FACTOR
-    return avg_demand_mw, peak_demand_mw
 
 
 def main(min_generation_mw: float = 0.0, percentiles=(0.5, 0.75, 0.9, 0.95)):

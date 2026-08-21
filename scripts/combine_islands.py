@@ -33,7 +33,11 @@ import json
 
 from configs import setup_logger
 from configs.virginia_config import VA_NETWORK_DIR
-from scripts.select_virginia_island import load_graph, _boundary_edges, _sanitize_for_json
+from scripts.island_graph_utils import (
+    load_graph,
+    boundary_edges as _boundary_edges,
+    sanitize_for_json as _sanitize_for_json,
+)
 
 logger = setup_logger(log_file="logs/combine_islands.log")
 

@@ -119,7 +119,6 @@ Usage:
 
 import argparse
 import json
-import pickle
 
 import networkx as nx
 import pandas as pd
@@ -127,68 +126,26 @@ import pandas as pd
 from configs import setup_logger
 from configs.virginia_config import VA_ECON_DIR, VA_NETWORK_DIR
 import scripts.check_island_generation as gen_check
+from scripts.island_graph_utils import (
+    load_graph,
+    boundary_edges as _boundary_edges,
+    total_boundary_cost as _total_cost,
+    sanitize_for_json as _sanitize_for_json,
+    excluded_nodes_for as _excluded_nodes_for,
+)
 
 logger = setup_logger(log_file="logs/select_virginia_island.log")
 
 MAX_ISLAND_SIZE = 15
 
 
-def _sanitize_for_json(obj):
-    """Recursively replace float('inf')/-inf with None. json.dump would
-    otherwise emit the bare (non-standard) token Infinity for a ratio of
-    inf -- valid to Python's own json.load, but not spec-compliant JSON,
-    so a different tool reading va_island_a.json could choke on it. A
-    ratio of inf only occurs when cost hits exactly 0 (the island has
-    absorbed its entire reachable component, or an edge case) -- None
-    communicates "undefined/no boundary cost" without smuggling a
-    non-standard numeric token into the file."""
-    if isinstance(obj, float) and (obj == float("inf") or obj == float("-inf")):
-        return None
-    if isinstance(obj, dict):
-        return {k: _sanitize_for_json(v) for k, v in obj.items()}
-    if isinstance(obj, list):
-        return [_sanitize_for_json(v) for v in obj]
-    return obj
-
-
-def load_graph() -> nx.Graph:
-    path = VA_NETWORK_DIR / "va_network_graph.pkl"
-    if not path.exists():
-        raise FileNotFoundError(f"Missing {path}. Run scripts/build_virginia_network_graph.py first.")
-    with open(path, "rb") as f:
-        return pickle.load(f)
-
-
 def load_sci_lookup() -> dict:
     path = VA_ECON_DIR / "va_substation_criticality.csv"
     if not path.exists():
-        raise FileNotFoundError(f"Missing {path}. Run scripts/compute_virginia_criticality.py first.")
+        raise FileNotFoundError(f"Missing {path}. Run scripts/deprecated_sci_islanding/compute_virginia_criticality.py first.")
     df = pd.read_csv(path)
     df["sub_id"] = df["sub_id"].astype(str)
     return dict(zip(df["sub_id"], df["SCI"]))
-
-
-def _boundary_edges(G: nx.Graph, island: set) -> set:
-    """Induced cut of island against the rest of the graph -- every edge
-    with exactly one endpoint inside island. Recomputed fresh rather than
-    incrementally patched; see module docstring for why."""
-    boundary = set()
-    for u in island:
-        for v in G.neighbors(u):
-            if v not in island:
-                boundary.add((u, v) if u < v else (v, u))
-    return boundary
-
-
-def _edge_cost(G: nx.Graph, u: str, v: str) -> float:
-    """Voltage-weighted cost (kV / 100), summed per physical parallel line
-    this graph edge represents -- see module docstring's COST WEIGHTING."""
-    voltages = G.edges[u, v].get("voltages", [])
-    return sum(v_kv / 100 for v_kv in voltages if v_kv is not None)
-
-
-def _total_cost(G: nx.Graph, boundary: set) -> float:
-    return sum(_edge_cost(G, u, v) for u, v in boundary)
 
 
 def select_island(
@@ -302,29 +259,6 @@ def select_island(
         "hit_size_cap": hit_cap,
         "growth_trace": trace,
     }
-
-
-def _excluded_nodes_for(G: nx.Graph, island_ids: list) -> set:
-    """Phase 6: members + boundary neighbors of each prior island, so a
-    second (third, ...) island can't overlap or sit immediately adjacent
-    to one already selected -- "excluded_nodes... Island A's members and
-    boundary, keeping the two structurally independent" per this module's
-    own ELIGIBILITY section above. Boundary neighbors (not just members)
-    are excluded because seeding right next to Island A's cut wouldn't be
-    a structurally independent second island, just an extension of the
-    first one by another name."""
-    excluded = set()
-    for island_id in island_ids:
-        path = VA_NETWORK_DIR / f"va_island_{island_id}.json"
-        if not path.exists():
-            raise FileNotFoundError(f"Missing {path} -- can't exclude Island {island_id}'s footprint.")
-        with open(path) as f:
-            prior = json.load(f)
-        members = set(prior["members"])
-        boundary = _boundary_edges(G, members)
-        boundary_neighbors = {v if u in members else u for u, v in boundary}
-        excluded |= members | boundary_neighbors
-    return excluded
 
 
 def main(

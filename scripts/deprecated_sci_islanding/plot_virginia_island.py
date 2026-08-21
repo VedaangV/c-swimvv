@@ -43,7 +43,7 @@ from configs.virginia_config import (
     VA_FIGURES_DIR,
     get_virginia_boundary,
 )
-from scripts.select_virginia_island import _boundary_edges, load_graph
+from scripts.island_graph_utils import boundary_edges as _boundary_edges, load_graph
 
 logger = setup_logger(log_file="logs/plot_virginia_island.log")
 

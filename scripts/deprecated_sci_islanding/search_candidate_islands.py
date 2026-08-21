@@ -43,7 +43,7 @@ import argparse
 import time
 
 from configs import setup_logger
-import scripts.select_virginia_island as sel
+import scripts.deprecated_sci_islanding.select_virginia_island as sel
 import scripts.run_virginia_islanded_gic as gic
 import scripts.run_virginia_islanded_fragility as frag
 import scripts.run_virginia_islanded_econ_analysis as econ

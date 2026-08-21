@@ -62,7 +62,7 @@ import networkx as nx
 from configs import setup_logger
 from configs.virginia_config import VA_NETWORK_DIR, get_island_dirs
 from scripts.run_virginia_gic import main as run_gic_main
-from scripts.select_virginia_island import load_graph, _boundary_edges
+from scripts.island_graph_utils import load_graph, boundary_edges as _boundary_edges
 
 logger = setup_logger(log_file="logs/run_virginia_islanded_gic.log")
 
@@ -71,7 +71,7 @@ def load_island(island_id: str = "a") -> dict:
     path = VA_NETWORK_DIR / f"va_island_{island_id}.json"
     if not path.exists():
         raise FileNotFoundError(
-            f"Missing {path}. Run scripts/select_virginia_island.py "
+            f"Missing {path}. Run an island-selection script "
             f"(island_id='{island_id}') first."
         )
     with open(path) as f:

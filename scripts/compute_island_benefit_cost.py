@@ -41,8 +41,8 @@ cost assumption and this project's earlier DEMAND PROXY):
 GENERATION CREDIT
 -------------------
 own_outage_cost is discounted by min(1, island_generation_mw /
-island_peak_demand_mw_est) -- both computed exactly as in scripts/
-check_generation_sci_overlap.py's DEMAND PROXY, just summed over the
+island_peak_demand_mw_est) -- both computed exactly as in
+scripts/virginia_demand_proxy.py's DEMAND PROXY, just summed over the
 island's members instead of reported per-substation. An island whose
 matched EIA-860 generation fully covers its own demand-proxy has its
 own-outage cost zeroed (assumed continuously served through the
@@ -65,9 +65,9 @@ import pandas as pd
 from configs import setup_logger
 from configs.virginia_config import VA_ECON_DIR, VA_NETWORK_DIR
 import scripts.check_island_generation as gen_check
-import scripts.check_generation_sci_overlap as demand_proxy
+import scripts.virginia_demand_proxy as demand_proxy
 import scripts.compare_island_econ as econ_cmp
-import scripts.compute_virginia_criticality as crit
+import scripts.virginia_risk_data as crit
 
 logger = setup_logger(log_file="logs/compute_island_benefit_cost.log")
 
@@ -79,7 +79,10 @@ REPAIR_DURATION_DAYS_VARIANTS = {"low_180d": 180, "mid_365d": 365, "high_730d": 
 def load_island(island_id: str) -> dict:
     path = VA_NETWORK_DIR / f"va_island_{island_id}.json"
     if not path.exists():
-        raise FileNotFoundError(f"Missing {path}. Run scripts/select_virginia_island.py first.")
+        raise FileNotFoundError(
+            f"Missing {path}. Run an island-selection script first (e.g. "
+            "scripts/select_island_by_redistribution_sensitivity.py)."
+        )
     with open(path) as f:
         return json.load(f)
 
@@ -95,7 +98,7 @@ def load_topo_coords() -> pd.DataFrame:
 
 def compute_island_generation_and_demand(members: list) -> dict:
     """Island-wide generation_mw, peak_demand_mw_est, and their ratio --
-    same mechanics as check_generation_sci_overlap.py's per-substation
+    same mechanics as scripts/virginia_demand_proxy.py's per-substation
     DEMAND PROXY, summed across the island's members instead."""
     topo = load_topo_coords()
     sub_coords = topo[topo["sub_id"].isin(members)][["sub_id", "latitude", "longitude"]]
