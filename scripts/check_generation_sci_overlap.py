@@ -17,6 +17,40 @@ Reports, without running any island-selection or heavy pipeline stage:
 - for a few SCI percentile cutoffs (p50/p75/p90/p95), how many of the
   substations above that cutoff also have generation nearby
 
+DEMAND PROXY (population-based, order-of-magnitude only)
+----------------------------------------------------------
+The pipeline has no per-substation electrical load (MW) data anywhere --
+econ_exposure_i (compute_virginia_criticality.py) uses population/GDP
+*density* as an economic-impact proxy, not electrical demand. There is
+no load-flow model here, so "does this substation's nearby generation
+actually cover its own demand" can't be answered with real data already
+on hand. This adds a rough proxy instead of leaving the question
+unanswered: each substation's Voronoi-cell population (already computed
+for econ_exposure_i, reused via compute_virginia_criticality.load_
+economic_exposure()) is converted to an estimated average continuous MW
+demand using a single national per-capita consumption constant
+(US_AVG_ELECTRICITY_KWH_PER_CAPITA_YEAR -- commonly cited order-of-
+magnitude figure for combined residential+commercial+industrial U.S.
+electricity use, NOT a Virginia-specific or substation-specific
+measurement), then inflated to a rough peak-demand estimate via
+US_TYPICAL_ANNUAL_LOAD_FACTOR (average/peak ratio -- storms don't
+necessarily hit at off-peak load, so sizing against peak, not average,
+is the conservative direction).
+
+This is explicitly NOT a real load estimate -- it ignores the
+substation's actual customer mix (a residential feeder and an
+industrial substation with the same population would have very
+different real demand), any diurnal/seasonal timing, and any
+transmission losses. It exists only to catch an order-of-magnitude
+mismatch (a 20 MW plant matched to a substation whose Voronoi cell
+implies ~500 MW of demand is obviously not self-sufficient; one matched
+to a cell implying ~5 MW might be) before spending an overnight run on
+a candidate where the generation clearly couldn't cover the load at
+all. A real substation-level load estimate (e.g. from EIA-861 utility
+sales data or actual PJM/utility load data, if available) would be a
+strictly better input than this if the user has access to it -- this
+proxy is a stand-in for that, not a permanent replacement.
+
 Usage:
     python scripts/check_generation_sci_overlap.py
     python scripts/check_generation_sci_overlap.py --min-generation-mw 50
@@ -29,8 +63,14 @@ import pandas as pd
 from configs import setup_logger
 from configs.virginia_config import VA_ECON_DIR, VA_NETWORK_DIR
 import scripts.check_island_generation as gen_check
+import scripts.compute_virginia_criticality as crit
 
 logger = setup_logger(log_file="logs/check_generation_sci_overlap.log")
+
+# See DEMAND PROXY in the module docstring -- rough order-of-magnitude
+# constants only, not a real load estimate.
+US_AVG_ELECTRICITY_KWH_PER_CAPITA_YEAR = 12000.0
+US_TYPICAL_ANNUAL_LOAD_FACTOR = 0.6
 
 
 def load_sci_table() -> pd.DataFrame:
@@ -51,6 +91,23 @@ def load_coords() -> pd.DataFrame:
     return df
 
 
+def load_population_lookup() -> dict:
+    """sub_id -> population, reusing compute_virginia_criticality.py's
+    econ-exposure loader (same source econ_exposure_i already draws
+    population from) rather than re-deriving it."""
+    exposure = crit.load_economic_exposure()
+    return dict(zip(exposure["sub_id"], exposure["population"]))
+
+
+def estimate_demand_mw(population: pd.Series) -> tuple:
+    """See module docstring's DEMAND PROXY -- rough order-of-magnitude
+    average and peak MW estimates from population alone, not a real load
+    estimate. Returns (avg_demand_mw, peak_demand_mw) as parallel Series."""
+    avg_demand_mw = population * US_AVG_ELECTRICITY_KWH_PER_CAPITA_YEAR / 8760 / 1000
+    peak_demand_mw = avg_demand_mw / US_TYPICAL_ANNUAL_LOAD_FACTOR
+    return avg_demand_mw, peak_demand_mw
+
+
 def main(min_generation_mw: float = 0.0, percentiles=(0.5, 0.75, 0.9, 0.95)):
     sci_df = load_sci_table()
     topo = load_coords()
@@ -62,6 +119,7 @@ def main(min_generation_mw: float = 0.0, percentiles=(0.5, 0.75, 0.9, 0.95)):
             "No EIA-860 generation data available -- download it first, see "
             "scripts/check_island_generation.py's module docstring."
         )
+    population_lookup = load_population_lookup()
 
     sci_df = sci_df.copy()
     sci_df["generation_mw"] = sci_df["sub_id"].map(generation_lookup).fillna(0.0)
@@ -71,6 +129,15 @@ def main(min_generation_mw: float = 0.0, percentiles=(0.5, 0.75, 0.9, 0.95)):
     # (the default) would flag every substation as "has_generation".
     sci_df["has_generation"] = sci_df["sub_id"].isin(generation_lookup) & (
         sci_df["generation_mw"] >= min_generation_mw
+    )
+    sci_df["population"] = sci_df["sub_id"].map(population_lookup).fillna(0.0)
+    sci_df["avg_demand_mw_est"], sci_df["peak_demand_mw_est"] = estimate_demand_mw(sci_df["population"])
+    # inf, not a large finite number, when peak_demand_mw_est is 0 (no
+    # population in this substation's service area) -- genuinely undefined
+    # coverage, not "infinite coverage" in any meaningful sense, but inf
+    # sorts naturally to the top when ranking by coverage below.
+    sci_df["generation_covers_peak_demand_ratio"] = (
+        sci_df["generation_mw"] / sci_df["peak_demand_mw_est"].replace(0.0, float("nan"))
     )
 
     n_total = len(sci_df)
@@ -83,8 +150,17 @@ def main(min_generation_mw: float = 0.0, percentiles=(0.5, 0.75, 0.9, 0.95)):
     gen_subs = sci_df[sci_df["has_generation"]].sort_values("SCI", ascending=False)
     if not gen_subs.empty:
         logger.info(
-            "Top 10 generation-backed substations by SCI:\n"
-            + gen_subs[["sub_id", "SCI", "generation_mw"]].head(10).to_string(index=False)
+            "Top 10 generation-backed substations by SCI (demand estimates are a rough "
+            "population-based proxy -- see module docstring's DEMAND PROXY, not a real load model):\n"
+            + gen_subs[
+                ["sub_id", "SCI", "generation_mw", "population", "avg_demand_mw_est",
+                 "peak_demand_mw_est", "generation_covers_peak_demand_ratio"]
+            ].head(10).to_string(index=False)
+        )
+        n_covers_peak = int((gen_subs["generation_covers_peak_demand_ratio"] >= 1.0).sum())
+        logger.info(
+            f"{n_covers_peak}/{len(gen_subs)} generation-backed substations have matched "
+            "generation >= their estimated peak demand proxy (coverage ratio >= 1)."
         )
 
     for p in percentiles:
