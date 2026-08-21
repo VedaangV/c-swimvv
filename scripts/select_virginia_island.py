@@ -215,7 +215,16 @@ def select_island(
 
     seed_candidates = eligible_nodes
     if generation_lookup is not None:
-        seed_candidates = {n for n in eligible_nodes if generation_lookup.get(n, 0.0) >= min_generation_mw}
+        # `n in generation_lookup` first: compute_generation_by_substation()
+        # omits substations with no matched generation entirely (see its
+        # docstring), rather than including them at 0.0 MW. Checking only
+        # `.get(n, 0.0) >= min_generation_mw` would let every unmatched
+        # substation silently pass whenever min_generation_mw is 0.0 (the
+        # default), defeating require_local_generation entirely.
+        seed_candidates = {
+            n for n in eligible_nodes
+            if n in generation_lookup and generation_lookup[n] >= min_generation_mw
+        }
         if not seed_candidates:
             raise ValueError(
                 f"require_local_generation: no eligible substation has >= {min_generation_mw} MW "
