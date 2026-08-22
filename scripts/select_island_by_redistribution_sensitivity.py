@@ -38,26 +38,32 @@ island plus one growth candidate):
    outside `members`, recompute current-flow betweenness there
    (cfb_after).
 3. redistribution_cost = mean risk-weighted cfb per remaining substation,
-   AFTER the cut, minus the same quantity from a one-time BASELINE
-   current-flow betweenness computed on the untouched full network
-   (restricted to the same remaining node set each time, so it's an
-   apples-to-apples comparison, not confounded by which nodes happen to
-   still be reachable). Positive means the cut made the rest of the
-   network's risk-weighted current importance worse on average;
-   negative means it improved.
+   AFTER the cut, SUMMED (not averaged) over remaining substations,
+   minus the same quantity from a one-time BASELINE current-flow
+   betweenness computed on the untouched full network (restricted to
+   the same remaining node set each time, so it's an apples-to-apples
+   comparison, not confounded by which nodes happen to still be
+   reachable). Positive means the cut made the rest of the network's
+   risk-weighted current importance worse in total; negative means it
+   improved.
 
-   Using the MEAN (not the sum) over remaining substations is a
-   deliberate scale choice -- summing risk-weighted cfb over ~2600
+   Originally used the MEAN, out of a concern that summing over ~2600
    substations would produce a number two to three orders of magnitude
-   larger than `benefit` below (summed over at most a few dozen
-   protected substations), making `benefit` numerically irrelevant to
-   net_score regardless of how real the protection is. The mean keeps
-   redistribution_cost on a "typical per-substation impact" scale
-   that's actually comparable to benefit. This is itself a modeling
-   assumption worth sensitivity-testing against real data (e.g. trying
-   the sum, or a percentile-based measure that's less sensitive to a
-   large network diluting a concentrated hotspot's effect), not a
-   settled choice.
+   larger than `benefit` (summed over at most a few dozen protected
+   substations), making benefit numerically irrelevant. Real data
+   proved that concern backwards: current_flow_betweenness_centrality's
+   normalized per-node values are already tiny at real network scale
+   (~1e-4 to 1e-7), so the MEAN crushed redistribution_cost down to
+   ~1e-5 to 1e-8 -- numerically negligible next to switching_cost and
+   benefit (both order 0.1-10), meaning net_score was silently ignoring
+   redistribution entirely and degenerating into "pick highest benefit,
+   penalize switching cost" -- exactly the local-proxy blindness this
+   algorithm exists to fix. Switching to the SUM (first caught against
+   a real ~2600-node Virginia run, not a synthetic fixture) restored a
+   comparable, meaningful magnitude. redistribution_cost_weight is
+   still exposed as a tunable multiplier -- this scale calibration is
+   itself a modeling assumption worth further sensitivity-testing
+   against real results, not a permanently settled choice.
 4. benefit = sum of risk_weight over `members` -- these substations'
    own GIC-risk/economic-exposure no longer needs to route through the
    part of the grid being protected. Same role as the old algorithm's
@@ -152,6 +158,7 @@ logger = setup_logger(log_file="logs/select_island_by_redistribution_sensitivity
 MAX_ISLAND_SIZE = 15
 N_SEED_CANDIDATES = 10
 SWITCHING_COST_WEIGHT = 0.1
+REDISTRIBUTION_COST_WEIGHT = 1.0
 
 
 def load_risk_weights() -> dict:
@@ -194,6 +201,7 @@ def evaluate_cut(
     cfb_baseline_full: dict,
     solver: str = "lu",
     switching_cost_weight: float = SWITCHING_COST_WEIGHT,
+    redistribution_cost_weight: float = REDISTRIBUTION_COST_WEIGHT,
 ) -> dict:
     """Score cutting `members`'s induced boundary -- see module
     docstring's SCORING. Requires one current_flow_betweenness_centrality
@@ -206,19 +214,13 @@ def evaluate_cut(
 
     rest_nodes = list(rest.nodes())
     n_rest = len(rest_nodes)
-    baseline_mean = (
-        sum(risk_weights.get(n, 0.0) * cfb_baseline_full.get(n, 0.0) for n in rest_nodes) / n_rest
-        if n_rest > 0 else 0.0
-    )
-    after_mean = (
-        sum(risk_weights.get(n, 0.0) * cfb_after.get(n, 0.0) for n in rest_nodes) / n_rest
-        if n_rest > 0 else 0.0
-    )
-    redistribution_cost = after_mean - baseline_mean
+    baseline_sum = sum(risk_weights.get(n, 0.0) * cfb_baseline_full.get(n, 0.0) for n in rest_nodes)
+    after_sum = sum(risk_weights.get(n, 0.0) * cfb_after.get(n, 0.0) for n in rest_nodes)
+    redistribution_cost = after_sum - baseline_sum
 
     benefit = sum(risk_weights.get(n, 0.0) for n in members)
     switching_cost = total_boundary_cost(G, boundary)
-    net_score = benefit - redistribution_cost - switching_cost_weight * switching_cost
+    net_score = benefit - redistribution_cost_weight * redistribution_cost - switching_cost_weight * switching_cost
 
     return {
         "boundary": boundary,
@@ -237,6 +239,7 @@ def select_island_by_sensitivity(
     max_size: int = MAX_ISLAND_SIZE,
     n_seed_candidates: int = N_SEED_CANDIDATES,
     switching_cost_weight: float = SWITCHING_COST_WEIGHT,
+    redistribution_cost_weight: float = REDISTRIBUTION_COST_WEIGHT,
     solver: str = "lu",
 ) -> dict:
     """Run the redistribution-sensitivity-guided greedy search once.
@@ -262,7 +265,10 @@ def select_island_by_sensitivity(
     seed_candidate_trace = []
     best_seed, best_eval = None, None
     for s in seed_candidates:
-        ev = evaluate_cut(G, {s}, risk_weights, cfb_baseline_full, solver=solver, switching_cost_weight=switching_cost_weight)
+        ev = evaluate_cut(
+            G, {s}, risk_weights, cfb_baseline_full, solver=solver,
+            switching_cost_weight=switching_cost_weight, redistribution_cost_weight=redistribution_cost_weight,
+        )
         seed_candidate_trace.append({"candidate": s, **{k: v for k, v in ev.items() if k != "boundary"}})
         if best_eval is None or ev["net_score"] > best_eval["net_score"]:
             best_seed, best_eval = s, ev
@@ -294,7 +300,8 @@ def select_island_by_sensitivity(
         best_candidate, best_candidate_eval = None, None
         for c in candidates:
             trial_eval = evaluate_cut(
-                G, island | {c}, risk_weights, cfb_baseline_full, solver=solver, switching_cost_weight=switching_cost_weight
+                G, island | {c}, risk_weights, cfb_baseline_full, solver=solver,
+                switching_cost_weight=switching_cost_weight, redistribution_cost_weight=redistribution_cost_weight,
             )
             if best_candidate_eval is None or trial_eval["net_score"] > best_candidate_eval["net_score"]:
                 best_candidate, best_candidate_eval = c, trial_eval
@@ -345,6 +352,7 @@ def main(
     max_size: int = MAX_ISLAND_SIZE,
     n_seed_candidates: int = N_SEED_CANDIDATES,
     switching_cost_weight: float = SWITCHING_COST_WEIGHT,
+    redistribution_cost_weight: float = REDISTRIBUTION_COST_WEIGHT,
     solver: str = "lu",
 ):
     G = load_graph()
@@ -362,7 +370,8 @@ def main(
 
     island = select_island_by_sensitivity(
         G, risk_weights, excluded_nodes=excluded_nodes, max_size=max_size,
-        n_seed_candidates=n_seed_candidates, switching_cost_weight=switching_cost_weight, solver=solver,
+        n_seed_candidates=n_seed_candidates, switching_cost_weight=switching_cost_weight,
+        redistribution_cost_weight=redistribution_cost_weight, solver=solver,
     )
 
     out_path = VA_NETWORK_DIR / f"va_island_{island_id}.json"
@@ -404,10 +413,16 @@ if __name__ == "__main__":
              "current-flow-betweenness solves spent on seed selection).",
     )
     parser.add_argument("--switching-cost-weight", type=float, default=SWITCHING_COST_WEIGHT)
+    parser.add_argument(
+        "--redistribution-cost-weight", type=float, default=REDISTRIBUTION_COST_WEIGHT,
+        help="Multiplier on the measured whole-network redistribution effect in net_score. "
+             "Default 1.0 (unscaled) -- tune if results seem to over- or under-weight redistribution "
+             "relative to benefit/switching_cost.",
+    )
     parser.add_argument("--solver", type=str, default="lu", choices=["full", "lu", "cg"])
     args = parser.parse_args()
     main(
         island_id=args.island, exclude_island_ids=args.exclude, max_size=args.max_size,
         n_seed_candidates=args.n_seed_candidates, switching_cost_weight=args.switching_cost_weight,
-        solver=args.solver,
+        redistribution_cost_weight=args.redistribution_cost_weight, solver=args.solver,
     )
