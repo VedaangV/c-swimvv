@@ -100,6 +100,21 @@ similarly restricted beyond the existing boundary-adjacency constraint
 (same as the old algorithm), since that pool is naturally small
 (a boundary's fan-out, typically single digits to tens).
 
+min_lines filters the SEED pool (not growth) to substations with at
+least that many physical lines incident to them (summed line_ids across
+all their graph edges) -- added after a real run against Virginia data
+kept selecting a genuine degree-1 dead-end substation as seed every
+time: real GIC risk, real economic exposure, minimal switching cost,
+and (correctly, not a bug) essentially zero redistribution cost, since
+nothing routes through a true leaf. That's a legitimate, defensible
+result on its own (see ISLANDING_MITIGATION_PLAN.md's Phase 6b), but it
+never gives growth a chance to run, since a degree-1 node has at most
+one neighbor to grow into. min_lines >= 2 forces seed selection toward
+substations that could plausibly anchor a multi-substation region,
+without touching growth itself (a growth step CAN still add a
+low-degree substation once the island already has real size -- this
+only constrains where the search starts).
+
 PERFORMANCE, UNTESTED AT REAL SCALE
 -------------------------------------
 Same caveat as check_redistribution_proxy.py: current_flow_betweenness_
@@ -194,6 +209,16 @@ def load_risk_weights() -> dict:
     return {str(k): float(v) for k, v in zip(merged["sub_id"], merged["risk_weight"])}
 
 
+def node_line_count(G: nx.Graph, node) -> int:
+    """Physical line count incident to `node` -- summed line_ids across
+    all its graph edges (build_virginia_network_graph.py aggregates
+    parallel circuits onto one graph edge, so this is NOT just the
+    node's graph degree). A node with node_line_count == 1 is a true
+    dead-end: cutting it can't redistribute current anywhere, since
+    nothing was routing through it in the first place."""
+    return sum(len(data.get("line_ids", [])) for _, _, data in G.edges(node, data=True))
+
+
 def evaluate_cut(
     G: nx.Graph,
     members: set,
@@ -240,13 +265,17 @@ def select_island_by_sensitivity(
     n_seed_candidates: int = N_SEED_CANDIDATES,
     switching_cost_weight: float = SWITCHING_COST_WEIGHT,
     redistribution_cost_weight: float = REDISTRIBUTION_COST_WEIGHT,
+    min_lines: int = 1,
     solver: str = "lu",
 ) -> dict:
     """Run the redistribution-sensitivity-guided greedy search once.
     Returns a dict with the same members/boundary_line_ids/seed/
     growth_trace shape scripts/deprecated_sci_islanding/select_virginia_
     island.py produced, plus the new net_score/benefit/
-    redistribution_cost/switching_cost breakdown at each step."""
+    redistribution_cost/switching_cost breakdown at each step.
+
+    min_lines restricts the SEED pool only -- see module docstring's
+    SEED CANDIDATE POOL."""
     excluded_nodes = excluded_nodes or set()
     eligible_nodes = set(risk_weights) - excluded_nodes
     if not eligible_nodes:
@@ -256,10 +285,24 @@ def select_island_by_sensitivity(
     G_baseline = largest_component_subgraph(G)
     cfb_baseline_full = nx.current_flow_betweenness_centrality(G_baseline, weight="conductance", solver=solver)
 
-    seed_candidates = sorted(eligible_nodes, key=lambda n: risk_weights[n], reverse=True)[:n_seed_candidates]
+    seed_pool = eligible_nodes
+    if min_lines > 1:
+        seed_pool = {n for n in eligible_nodes if node_line_count(G, n) >= min_lines}
+        if not seed_pool:
+            raise ValueError(
+                f"min_lines={min_lines}: no eligible substation has that many physical lines. "
+                "Lower --min-lines."
+            )
+        logger.info(
+            f"min_lines={min_lines}: {len(seed_pool)}/{len(eligible_nodes)} eligible substations "
+            "qualify as seed candidates."
+        )
+
+    seed_candidates = sorted(seed_pool, key=lambda n: risk_weights[n], reverse=True)[:n_seed_candidates]
     logger.info(
-        f"Evaluating {len(seed_candidates)} seed candidates (top {n_seed_candidates} by raw risk weight) "
-        "by their actual whole-network redistribution effect..."
+        f"Evaluating {len(seed_candidates)} seed candidates (top {n_seed_candidates} by raw risk weight"
+        f"{f', min_lines={min_lines}' if min_lines > 1 else ''}) by their actual whole-network "
+        "redistribution effect..."
     )
 
     seed_candidate_trace = []
@@ -353,6 +396,7 @@ def main(
     n_seed_candidates: int = N_SEED_CANDIDATES,
     switching_cost_weight: float = SWITCHING_COST_WEIGHT,
     redistribution_cost_weight: float = REDISTRIBUTION_COST_WEIGHT,
+    min_lines: int = 1,
     solver: str = "lu",
 ):
     G = load_graph()
@@ -371,7 +415,7 @@ def main(
     island = select_island_by_sensitivity(
         G, risk_weights, excluded_nodes=excluded_nodes, max_size=max_size,
         n_seed_candidates=n_seed_candidates, switching_cost_weight=switching_cost_weight,
-        redistribution_cost_weight=redistribution_cost_weight, solver=solver,
+        redistribution_cost_weight=redistribution_cost_weight, min_lines=min_lines, solver=solver,
     )
 
     out_path = VA_NETWORK_DIR / f"va_island_{island_id}.json"
@@ -419,10 +463,17 @@ if __name__ == "__main__":
              "Default 1.0 (unscaled) -- tune if results seem to over- or under-weight redistribution "
              "relative to benefit/switching_cost.",
     )
+    parser.add_argument(
+        "--min-lines", type=int, default=1,
+        help="Restrict SEED choice (not growth) to substations with at least this many physical "
+             "lines incident to them. Default 1 (no restriction). Use --min-lines 2 to rule out "
+             "degree-1 dead-end substations as seeds -- they tend to win on cost-effectiveness "
+             "(minimal switching cost, ~zero redistribution risk) but can't grow past themselves.",
+    )
     parser.add_argument("--solver", type=str, default="lu", choices=["full", "lu", "cg"])
     args = parser.parse_args()
     main(
         island_id=args.island, exclude_island_ids=args.exclude, max_size=args.max_size,
         n_seed_candidates=args.n_seed_candidates, switching_cost_weight=args.switching_cost_weight,
-        redistribution_cost_weight=args.redistribution_cost_weight, solver=args.solver,
+        redistribution_cost_weight=args.redistribution_cost_weight, min_lines=args.min_lines, solver=args.solver,
     )
