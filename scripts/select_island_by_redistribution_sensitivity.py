@@ -71,9 +71,26 @@ island plus one growth candidate):
    (betweenness is now measured dynamically via cfb instead).
 5. switching_cost = voltage-weighted boundary cost (unchanged from the
    old algorithm -- see scripts/island_graph_utils.py's edge_cost()).
-6. net_score = benefit - redistribution_cost - switching_cost_weight *
-   switching_cost. Greedily maximized, same stopping rule as before
-   (stop the moment no candidate improves it).
+
+   SWITCHING_COST_WEIGHT recalibrated after a real run against Virginia
+   data: the original default (0.1) made a single 230kV line's
+   contribution (0.23) bigger than any real candidate's benefit
+   (observed range ~0.15-0.34) -- every multi-line candidate was forced
+   negative regardless of its actual redistribution profile, since
+   switching_cost alone always dominated. Recalibrated to 0.015 using
+   the same real observed magnitudes: at that weight, a typical 1-4
+   line cut contributes roughly 0.03-0.14 to net_score -- a real,
+   secondary factor comparable to redistribution_cost's typical
+   contribution, no longer structurally overwhelming benefit. Checked
+   against the real trace that motivated this: every one of the 10 real
+   seed candidates that were uniformly negative at weight=0.1 became
+   positive and meaningfully differentiated at weight=0.015. Like
+   redistribution_cost_weight, this is a real-data-grounded calibration,
+   not a first-principles derivation -- worth further sensitivity
+   testing, not a permanently settled constant.
+6. net_score = benefit - redistribution_cost_weight * redistribution_cost
+   - switching_cost_weight * switching_cost. Greedily maximized, same
+   stopping rule as before (stop the moment no candidate improves it).
 
 RISK WEIGHTS
 ------------
@@ -172,7 +189,7 @@ logger = setup_logger(log_file="logs/select_island_by_redistribution_sensitivity
 
 MAX_ISLAND_SIZE = 15
 N_SEED_CANDIDATES = 10
-SWITCHING_COST_WEIGHT = 0.1
+SWITCHING_COST_WEIGHT = 0.015
 REDISTRIBUTION_COST_WEIGHT = 1.0
 
 
