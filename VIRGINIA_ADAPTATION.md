@@ -1,19 +1,555 @@
-# Virginia C-SWIM Adaptation
+# Virginia C-SWIM Adaptation — Project Documentation
 
-Adapts the C-SWIM pipeline to Virginia, using the PJM region (VA + 12
-neighboring states/DC) as the modeling domain and filtering to Virginia only
-for reporting. This document supersedes the original planning doc
-(`VIRGINIA_ADAPTATION_V2.md`) where the two disagree — the plan was written
-before the actual scripts it needed to reuse (`build_admittance_matrix.py`,
-`calc_storm_maxes.py`, `est_gic.py`, `stat_analysis.py`,
-`preprocess/06_dl_power_grid_update.py`, `preprocess/08_p_power_grid.py`) had
-been read in full, and several of its assumptions about their schemas and
-behavior turned out not to hold. Confirmed scientific decisions from the
-original plan (run SECS across all of North America, never filter MT sites,
-model the full PJM footprint, filter to Virginia only for output) are
-unchanged.
+This document is a comprehensive, end-to-end account of the Virginia
+adaptation of C-SWIM (Coupled Space Weather Impact Model): the pipeline
+that was built, the grid-vulnerability and economic-impact results it
+produced, and the multi-strategy islanding mitigation investigation
+carried out on top of it. It's written to be readable on its own, without
+needing the national C-SWIM codebase's internals memorized first. Where a
+number, script name, or finding is stated, it is grounded in real code or
+real output in this repository, not projected — anything still pending
+real-data confirmation is flagged explicitly as such.
 
-## Key design decision: `VA_DATA_DIR` mirrors the US `DATA_DIR` layout
+**Paper this adapts**: Oughton, E.J., Bor, D.K., Weigel, R., Gaunt, C.T.,
+Dogan, R., Huang, L., Love, J.J., & Wiltberger, M. (2024). "Major Space
+Weather Risks Identified via Coupled Physics-Engineering-Economic
+Modeling." *arXiv:2412.18032*. That paper builds the national-scale
+pipeline (all of CONUS); this adaptation is the first state-level
+application of the same methodology, scoped to Virginia within the PJM
+interconnection.
+
+---
+
+## Contents
+
+1. [Project overview](#1-project-overview)
+2. [Pipeline architecture: from national C-SWIM to Virginia+PJM](#2-pipeline-architecture-from-national-c-swim-to-virginiapjm)
+3. [Grid vulnerability assessment](#3-grid-vulnerability-assessment)
+4. [Economic impact assessment](#4-economic-impact-assessment)
+5. [Islanding mitigation investigation](#5-islanding-mitigation-investigation)
+6. [Pipeline adaptation details (deviations from the original plan)](#6-pipeline-adaptation-details-deviations-from-the-original-plan)
+7. [Repository guide](#7-repository-guide)
+8. [Open items](#8-open-items)
+
+---
+
+## 1. Project overview
+
+Geomagnetically induced currents (GICs) — quasi-DC currents driven into
+the power grid by geomagnetic storms — pose a risk to high-voltage
+transformers: current above a threshold saturates a transformer's core,
+causing hot-spot heating and, in the worst case, permanent damage that
+can take 12-24+ months to repair. National-scale risk assessments (like
+the C-SWIM paper above) establish that this risk is real and material,
+but they aren't built to answer state-level, actionable questions: which
+specific substations in a given state are most exposed, what a storm
+actually costs that state's economy per day, and whether a concrete
+mitigation action (in this project's case, temporarily islanding part of
+the grid during a storm) can reduce that cost.
+
+This project answers those questions for Virginia, using the real PJM
+interconnection topology (Virginia plus the 12 neighboring
+states/DC that share its synchronous grid) as the electrical domain,
+filtering to Virginia-specific reporting throughout. Three phases:
+
+1. **Adapt the pipeline** (Section 2) — rebuild every stage of national
+   C-SWIM (network topology, admittance/GIC solve, storm statistics,
+   economic IO models) against a Virginia+PJM-scoped dataset instead of
+   the full national one, reusing the original numerical code wherever
+   possible rather than reimplementing it.
+2. **Assess grid vulnerability and economic impact** (Sections 3-4) —
+   run the adapted pipeline against 92 real historical storms
+   (1985-2024) plus statistically-derived return-period hazard curves
+   (25- to 250-year), rank Virginia's substations by GIC risk, and
+   translate storm-driven transformer damage into whole-Virginia $/day
+   economic loss via Ghosh and Leontief input-output models.
+3. **Investigate islanding as a mitigation strategy** (Section 5) — the
+   large, still-active part of this project. Explore whether temporarily
+   disconnecting a chosen region of Virginia's grid during a storm's
+   peak-risk window (protective islanding, not resilience/local-generation
+   islanding — see Section 5.1) can reduce that economic loss. This
+   involved building and testing two entirely different substation
+   *selection* strategies, six-plus real candidate islands, a literature
+   review that explained a real, reproducible failure mode, and a from-
+   scratch redistribution-aware replacement algorithm — currently mid-
+   validation against real data.
+
+**Headline results established so far**:
+- A 100-year return-period storm is projected to cost Virginia
+  **$145.5M/day**; a 250-year event, **$230.6M/day** (baseline, no
+  mitigation).
+- The first islanding selection strategy tried (a criticality-index-driven
+  greedy method) was tested against six real candidate regions and found
+  to be *unreliable* — mostly net-negative for whole-Virginia economic
+  impact — for a diagnosable, literature-confirmed reason (Section 5.3).
+- A second, redistribution-sensitivity-aware selection algorithm was
+  built to fix that specific flaw (Section 5.4); it is mechanically
+  validated (its own real-data test run correctly avoided a substation
+  independently confirmed to be a real GIC-redistribution hotspot from
+  the first strategy's results) but **has not yet been run through the
+  real fragility/economic pipeline** — that is the immediate next step,
+  not yet a reported result.
+
+---
+
+## 2. Pipeline architecture: from national C-SWIM to Virginia+PJM
+
+National C-SWIM is a six-stage pipeline (collect geomagnetic/grid data →
+derive extreme geoelectric field scenarios statistically → build an
+electrical admittance model of the EHV grid → simulate GIC under
+synthetic and historical storms → validate against real measurements →
+socio-economic impact modeling via IO/CGE models), run once across all
+of CONUS. The Virginia adaptation reruns every stage of that same
+pipeline against a smaller, Virginia+PJM-scoped dataset, reusing the
+original numerical code (SECS field interpolation, the nodal-admittance
+GIC solve, the IO economic models) as directly as possible rather than
+reimplementing any of it — the changes are almost entirely about *what
+data* feeds those functions, not the functions themselves. Section 6
+documents every specific deviation this required in detail; the shape
+of the adaptation is:
+
+| Stage | National C-SWIM | Virginia adaptation |
+|---|---|---|
+| Network topology | All of CONUS | PJM interconnection footprint (VA + 12 neighboring states/DC), via a spatial filter against `data/nerc_gdf.geojson` |
+| Storm/field data | 1616 US MT sites, full continental SECS interpolation | Same full site set and interpolation (never filtered — geomagnetic field interpolation needs the whole spatial context) |
+| Line-level voltage statistics | Precomputed for the national line set | **Recomputed from scratch** against Virginia+PJM's own (different) line set — the single most expensive adaptation step |
+| GIC solve | National admittance matrix | Virginia+PJM admittance matrix (same Y-matrix/Ohm's-law physics, smaller network) |
+| Economic model | National SAM/technology IO tables, national population/GDP shock | **Same national SAM/technology tables** (building a bespoke Virginia-regional SAM was judged out of scope), but the shock itself is Virginia-localized (Virginia ZCTA population/GDP, attributed to Virginia+PJM substation service areas) |
+| Reporting | All of CONUS | Filtered to Virginia only |
+
+The GIC physics itself is a quasi-DC resistive circuit problem: a storm's
+geoelectric field induces a voltage along each transmission line
+proportional to its length and orientation; solving Ohm's/Kirchhoff's
+laws over the network's nodal admittance (Y) matrix gives the resulting
+current at every substation and transformer. This is exactly the same
+model class the islanding investigation's redistribution-sensitivity
+algorithm later reuses directly (Section 5.4) — cutting a transmission
+line is a real, physical edit to that same Y-matrix, not a separate
+approximation.
+
+See Section 6 for the specific, itemized deviations this adaptation
+required (grid_mapping.csv handling, the FERC-sjoin replacement, the
+Windows multiprocessing bug found and fixed, the SAM-scope decision, and
+more) — that section is written for someone extending or auditing this
+codebase, while this overview is written for understanding the project's
+shape and results.
+
+---
+
+## 3. Grid vulnerability assessment
+
+### 3.1 Storm data: 92 real historical storms, statistically extended
+
+`data/kp_ap_indices/storm_periods.csv` contains **92 real historical
+geomagnetic storm periods**, spanning 1985-04-19 through 2024-05-09 (the
+last entry is the real May 2024 "Gannon" storm). `scripts/calc_storm_maxes.py`
+(reused from the national pipeline, via SECS field interpolation against
+all 1616 US MT sites) computes the maximum magnetic field (B), electric
+field (E), and line voltage (V) each of these 92 storms would have
+produced. `scripts/recompute_virginia_line_voltages.py` is the Virginia-
+specific step that replays this line-voltage calculation against
+Virginia+PJM's own transmission-line set (a real, non-trivial recompute —
+Virginia's lines are a brand-new set with no relationship to the national
+line IDs the original per-storm voltage data was computed against).
+
+Two distinct kinds of storm scenario are derived from this same 92-storm
+catalog, and downstream results (Sections 4-5) consistently label them
+differently:
+
+- **Statistically-derived return-period scenarios** (labeled `50-year`,
+  `75-year`, `100-year`, ... `250-year` in every downstream output; the
+  full range is `np.arange(25, 251, 25)`). `scripts/stat_analysis.py`
+  bootstrap-resamples the 92 storms' magnitudes (`n_samples=100`) and
+  fits a lognormal distribution to the pooled sample (`powerlaw.Fit(...)
+  .lognormal`), then reads off the magnitude at each return period's
+  exceedance probability. **No individual historical storm is "labeled"
+  as a return period** — all 92 are pooled into one statistical
+  distribution, and the return-period values are extrapolated from that
+  fitted curve.
+- **Real named historical events**, run through the same pipeline using
+  their *actual* computed magnitude (not a statistical estimate):
+  Halloween (2003), Gannon (2024), and St. Patrick's Day. These are
+  pulled out of the 92-storm catalog by date-matching
+  (`stat_analysis.get_event_indices()`). Only `gannon-year` is carried
+  through as a labeled scenario in the final economic-impact output
+  (`va_ghosh_results.csv`); Halloween and St. Patrick's Day appear in the
+  raw GIC-comparison diagnostics used during the islanding investigation
+  but not in the 10-scenario econ Monte Carlo scenario set.
+
+### 3.2 GIC risk simulation
+
+`scripts/run_virginia_admittance.py` builds the Virginia+PJM nodal
+admittance (Y) matrix from real transmission-line resistance data
+(`transmission_lines.csv`'s `R` column) and synthesizes a Monte Carlo
+sample of plausible transformer configurations per substation (since
+exact winding/grounding configuration isn't public data at the needed
+granularity). `scripts/run_virginia_gic.py` solves the resulting
+resistive-circuit GIC problem for every (storm scenario × Monte Carlo
+realization) combination — `N_MONTE_CARLO = 3000`, matching the national
+pipeline's sample size — producing both winding GIC (per-transformer)
+and **ground GIC** (the current flowing to earth through a substation's
+grounding connection — the physical quantity that drives transformer
+heating risk, and the one used throughout the fragility/risk-ranking
+work below). `scripts/extract_virginia_results.py` filters this Monte
+Carlo output down to Virginia-only substations for reporting.
+
+### 3.3 Substation risk ranking
+
+Two distinct risk-ranking approaches were used across this project, at
+different points:
+
+- **Raw ground-GIC magnitude** (`va_ground_gic_summary.csv`'s
+  `GIC_100_mean` column — 100-year mean ground GIC per substation) is the
+  simplest, most directly physical risk signal, and is what the current
+  (post-deprecation) islanding selection algorithm uses directly
+  (Section 5.4).
+- **Substation Criticality Index (SCI)** — a weighted composite index
+  (GIC risk + economic exposure + betweenness centrality + optionally
+  critical-load density) built specifically to drive the first islanding
+  selection strategy. SCI is documented in full, including why it was
+  ultimately retired, in Section 5.2-5.3 and
+  `scripts/deprecated_sci_islanding/README.md`. It is no longer part of
+  the active pipeline, though the underlying raw signals it was built
+  from (GIC risk, economic exposure) remain in active use via
+  `scripts/virginia_risk_data.py`.
+
+---
+
+## 4. Economic impact assessment
+
+### 4.1 Methodology
+
+Storm-driven GIC is translated into economic loss via a fragility →
+input-output (IO) chain, reusing the national pipeline's economic
+modeling code unmodified (`econ/scripts/econ_analysis.py`,
+`econ/preprocess/p_gic_files.py`) against Virginia-localized inputs:
+
+1. **Fragility** (`scripts/run_virginia_fragility.py`): converts each GIC
+   Monte Carlo realization into a per-substation transformer failure
+   probability, using continuous fragility curves (probability of damage
+   as a function of GIC magnitude) — not a hard threshold. This is a
+   deliberate modeling choice with real consequences discussed in Section
+   5.3: a continuous curve prices *every* redistributed amp, sub-
+   threshold or not, unlike a threshold-based damage model.
+2. **Economic exposure** (`scripts/run_virginia_areal_interpolation.py`):
+   maps Virginia ZCTA-level population and GDP data onto each Virginia+
+   PJM substation's own Voronoi service-area polygon (dasymetric
+   interpolation against NLCD land-cover data, via `tobler`/`rasterio`),
+   establishing how much of Virginia's economic activity is "exposed" at
+   each substation.
+3. **IO impact models** (`scripts/run_virginia_econ_analysis.py`): three
+   distinct national-SAM-table-based models, all driven by the Virginia-
+   localized shock from steps 1-2:
+   - **Ghosh value-added shock** — supply-side, "what happens to
+     production when a supply disruption hits."
+   - **Leontief consumption shock** — demand-side, "what happens to
+     downstream consumption."
+   - **Leontief consumption + production shock** — combined.
+
+   Results are reported across 10 economic sectors (AGR, MINING,
+   UTIL_CONST, MANUF, TRADE_TRANSP, INFO, FIRE, PROF_OTHER, EDUC_ENT, G)
+   and three confidence levels (mean, p5, p95) per scenario.
+
+**Why national SAM tables, not a bespoke Virginia-regional one**:
+building a proper Virginia-specific social accounting matrix would
+require its own supply-use tables and econometric balancing — a separate
+research project. The adaptation instead reuses the existing national
+SAM/technology tables (same ones the national C-SWIM paper uses) and
+drives them with a Virginia-localized shock — standard practice in sub-
+national disaster-economics impact studies, though it does mean the
+*ratio* logic ("Virginia's share of the national economy") is baked into
+the model, not something Virginia-specific results can fully escape.
+
+### 4.2 Headline results
+
+- **100-year return-period storm: $145.5M/day** (baseline, mean
+  confidence, no mitigation).
+- **250-year return-period storm: $230.6M/day**.
+- Losses scale monotonically with storm severity across the full 25- to
+  250-year range, as expected from the fragility-curve mechanism (higher
+  GIC → higher failure probability → more transformer damage → larger
+  supply/demand shock).
+
+These are the **baseline** (unmitigated) figures every islanding
+candidate in Section 5 is compared against — an islanding result is
+reported as the *change* in this whole-Virginia $/day figure once a
+region's boundary is (hypothetically, temporarily) disconnected, not as
+a standalone number.
+
+---
+
+## 5. Islanding mitigation investigation
+
+### 5.1 Motivation and scope: protective, not resilience, islanding
+
+The core idea: during a storm's peak-risk window, deliberately switch
+open a chosen set of transmission lines, temporarily disconnecting a
+region of the grid. This breaks the conductive path GIC needs to reach
+that region's transformers, protecting them from damage, at the cost of
+a short, planned power outage for that region (hours, not days) — a
+tradeoff worth making if the alternative is a transformer failure that
+can take 12-24+ months to repair. This is **protective islanding**, and
+it is the *only* thing modeled anywhere in this project, for every
+candidate discussed below: the GIC/fragility/econ simulation has no
+concept of a disconnected region continuing to operate on local
+generation (**resilience islanding**) — cutting a boundary changes
+current *redistribution* in the physics, nothing more. Local generation,
+where it enters this project at all (Section 5.2's `require_local_
+generation`, Section 5.4's benefit-cost script), only ever affects which
+substations get *selected*, or discounts an *assumed* outage cost after
+the fact — never what the simulation itself computes.
+
+This framing was clarified against real literature precedent: Oughton et
+al. 2017 (Space Weather) and MacManus 2023/2025 establish protective
+islanding as an operational GIC mitigation practice (New Zealand's grid
+operator has used it), and arXiv:2507.12495 (Oughton, Renton, Mac Manus,
+Bor, Rodger) is the closest direct precedent for combining islanding
+with an economic-impact assessment — its own strongest scenario
+(Scenario 5) is anchored on Manapouri, a real hydro generation site
+directly supplying a protected load (the Tiwai Point aluminum smelter),
+a materially different and more effective mechanism than protective-only
+islanding (see Section 5.2's Island F).
+
+Islanding-specific precedent combining it directly with GIC risk doesn't
+exist as a dedicated paper — an honest, named gap, not a hidden one; this
+project's actual contribution is combining separately-established ideas
+(topology reconfiguration for GIC mitigation, generally: arXiv:1701.01469;
+protective islanding as an operational practice) into an under-explored
+specific application, and rigorously testing it against real data.
+
+### 5.2 Phase 1: SCI-driven greedy selection (retired)
+
+**Design.** A Substation Criticality Index (SCI) was computed per
+eligible (Virginia, main-connected-component) substation as a weighted
+blend:
+
+```
+SCI_i = w_e * norm(GIC_risk_i) + w_x * norm(econ_exposure_i)
+      + w_t * norm(betweenness_i) [+ w_c * norm(critical_load_i)]
+```
+
+(equal weights, three-term or four-term depending on whether
+critical-facility data was available). A seeded greedy region-growing
+algorithm (ancestry: Clauset 2005, "Finding local community structure in
+networks") then: seeded on `argmax(SCI)`, initialized the island as that
+one substation, and iteratively added whichever boundary-adjacent
+substation most improved the ratio of SCI-weighted value (summed SCI
+over island members) to voltage-weighted boundary cost (kV/100 per
+physical line cut), stopping the moment no addition improved that ratio.
+
+**Six real candidates were selected and fully evaluated** (topology-
+edited GIC re-solve → fragility Monte Carlo → Ghosh/Leontief econ
+impact, compared against the unmitigated baseline):
+
+| Island | Members | Real result |
+|---|---|---|
+| A | 3 (seed `708152212`) | Net-negative for whole-Virginia $/day in **every** scenario checked |
+| B | 4 | Mostly negative; genuinely positive for the real Gannon storm scenario |
+| A+B combined | 7 | Worse than either individually — confirmed additivity (AB's diff ≈ A's diff + B's diff, within ~0.5pp across 30 scenarios), meaning stacking a net-negative island onto a net-positive one *erased* the win rather than averaging out |
+| C, D, E | — | Negligible effect in either direction |
+| F (generation-anchored, `require_local_generation`) | 11 (seed `81595538`, 175 MW nearby EIA-860 generation) | 6/10 scenarios net-positive, **including the real Gannon storm (+$1.15M/day)**, with a coherent severity-scaling pattern (losses at low severity, growing benefit at high severity) |
+
+Island F's positive result initially looked like evidence that
+generation-anchored seeding was the fix — but two follow-up
+investigations revised that conclusion:
+
+1. **The physics never modeled generation continuity at all** (Section
+   5.1) — `require_local_generation` only changed *which* 11 substations
+   got selected as seed and grown, landing the *same* SCI-greedy
+   algorithm in a structurally different, better-performing region of
+   the graph than Island A's pure-SCI seed. That's a real effect, but a
+   different claim than "generation kept the lights on."
+2. **A missing benefit-cost term was implemented and found to be
+   second-order.** The plan had always intended a proper benefit-cost
+   accounting (switching-labor cost + the island's own temporary-outage
+   cost, discounted by matched generation coverage) but it had never
+   actually been coded — `scripts/compute_island_benefit_cost.py` fixed
+   that gap. Run against real data: Island A's total one-time cost
+   ($0.059M) and Island F's ($0.324M, only 62% generation-discounted
+   since whole-island generation coverage, 38%, is far weaker than the
+   seed substation's own 11.2x) were both **3-4 orders of magnitude
+   smaller** than the fragility-driven benefit swings (hundreds to
+   thousands of $M once integrated over a plausible transformer-repair
+   duration) — meaning whether an island helps or hurts is determined
+   almost entirely by the raw redistribution physics, not by the cost
+   accounting or by generation.
+
+### 5.3 Diagnosis: why SCI-driven greedy selection failed
+
+Two compounding problems, established over the course of testing all six
+candidates above:
+
+1. **SCI's betweenness term used the wrong physics.** It was shortest-
+   path betweenness (Freeman 1977) — "how much traffic takes the single
+   cheapest route through this node." GIC doesn't route that way: it's
+   Ohm's-law current splitting across every parallel path simultaneously,
+   in proportion to conductance. `scripts/deprecated_sci_islanding/
+   check_redistribution_proxy.py` built a current-flow-betweenness proxy
+   (Newman 2005; Brandes & Fleischer 2005 — the electrically-faithful
+   analog, provably equivalent to modeling the graph as a resistor
+   network) to test this; it showed real but incomplete predictive power.
+
+2. **The deeper problem: no term anywhere in SCI or the greedy growth
+   ratio ever modeled where current goes once a boundary is cut.** Every
+   real run showed the same pattern — cutting a boundary concentrated
+   redistributed current onto a small, consistent set of substations
+   elsewhere (`96396693` for Island A, `96284749` for Island F, both 25+
+   km away — too far for a local boundary tweak to route around) large
+   enough to flip the whole-Virginia result negative.
+
+This turned out to be a **known, named problem** in the GIC mitigation
+literature, confirmed via a targeted literature review, not a Virginia-
+specific fluke. Nagarajan et al.'s work on the GIC blocking-device
+placement problem states directly: *"installing a blocking device at one
+location can exacerbate GIC levels at others across the power grid,"*
+and that *"simplistic strategies like greedy methods are likely
+inadequate"* for this problem class as a direct result
+(arXiv:2310.09409; review at arXiv:2402.07302). The field's actual
+methods — exact optimization directly over the GIC circuit
+(arXiv:1701.01469's MIQCP formulation), sensitivity-based placement, and
+robust optimization under uncertain storm severity (arXiv:2006.02461,
+arXiv:2104.00204's distributionally robust optimization) — share one
+property SCI-greedy selection lacked: every candidate intervention is
+scored by its measured effect on the *whole* network, never by a local
+index at the cut site alone. An existing open-source tool,
+**PowerModelsGMD.jl** (LANL-ANSI), already implements optimal
+transmission switching under GMD as a real optimization problem, for
+reference.
+
+**As a result, the entire SCI-driven method — its computation, its
+selection algorithm, and the two diagnostics built around it — was
+retired**, moved to `scripts/deprecated_sci_islanding/` (kept working,
+not deleted, with a README explaining this reasoning in full) rather
+than continuing to iterate on an approach the literature had already
+identified as structurally inadequate for this problem class.
+
+### 5.4 Phase 2: redistribution-sensitivity-guided selection (current)
+
+**Design** (`scripts/select_island_by_redistribution_sensitivity.py`).
+Same seeded-region-growing *shape* as the retired method (so it's a
+drop-in producer of the same `va_island_{id}.json` schema every
+downstream Phase-4/5 script already consumes) — what changed is the
+*score*. Every candidate (seed choice, and every growth step) is scored
+by **actually cutting it and measuring the real effect**:
+
+```
+net_score = benefit
+          - redistribution_cost_weight * redistribution_cost
+          - switching_cost_weight * switching_cost
+```
+
+- `benefit` = sum of a two-term risk weight (0.5 × normalized GIC risk +
+  0.5 × normalized economic exposure — deliberately *no* static
+  betweenness term, since redistribution is now measured dynamically
+  instead of approximated once upfront) over the candidate's members.
+- `redistribution_cost` = the *measured* change in risk-weighted
+  current-flow betweenness (Newman 2005; Brandes & Fleischer 2005 — same
+  math as the diagnostic in Section 5.3) summed over every remaining
+  substation, comparing a one-time network-wide baseline against the
+  network with this specific candidate's boundary actually cut. This is
+  the direct fix: instead of assuming redistribution away, it's computed
+  for every real candidate considered.
+- `switching_cost` = voltage-weighted physical boundary cost, unchanged
+  from the retired method.
+
+Growth stops the moment no candidate improves `net_score` — and, as of a
+recent fix, the algorithm now records and reports *why* it stopped
+(`stop_reason`: no eligible neighbors left vs. a candidate was genuinely
+evaluated and rejected, with that candidate's full score breakdown
+saved) rather than looking identical either way.
+
+**Two real calibration bugs were found and fixed against actual Virginia
+data** — both by the same method (checking real observed output
+magnitudes, not just synthetic fixtures):
+
+1. `redistribution_cost` was originally computed as a **mean** across
+   ~2475 remaining substations, out of a (mistaken) concern that summing
+   over thousands of nodes would make it *dominate* `benefit`. Real data
+   showed the opposite: `current_flow_betweenness_centrality`'s
+   normalized per-node values are already tiny at real network scale, so
+   dividing by ~2475 crushed the signal to ~1e-5 — numerically
+   irrelevant next to `benefit` (~0.1-0.5) and `switching_cost` (~2-15),
+   silently degenerating `net_score` into "pick highest benefit, penalize
+   switching cost" — reintroducing the exact blindness this algorithm
+   exists to fix, with extra computation spent to get there. **Fixed**:
+   switched to a **sum**.
+2. `switching_cost_weight` (originally 0.1) made a single 230kV line's
+   weighted contribution (0.23) alone exceed every real candidate's
+   `benefit` (observed range 0.15-0.34) — every multi-line candidate
+   scored `net_score < 0` regardless of its actual redistribution
+   profile. **Recalibrated to 0.015** using the same real observed
+   magnitudes; checked directly against the trace that motivated it, all
+   10 real seed candidates that were uniformly negative at the old
+   weight became positive and meaningfully differentiated at the new
+   one.
+
+A third addition, `--min-lines`, restricts *seed* choice (not growth) to
+substations with at least N physical lines — added because the top-
+scoring seed candidate by every other criterion kept turning out to be a
+genuine degree-1 dead-end substation: real risk, minimal switching cost,
+and (correctly, not a bug) ~zero redistribution effect, since nothing
+routes through a true leaf — a legitimate, defensible finding on its
+own, but one that can never grow past itself, which isn't useful for
+testing the growth mechanism.
+
+**Current real-data status (Island G, `--exclude a b c d e f
+--min-lines 2`)**: seed `96396692`, grew to 2 members (`+638514006`),
+`net_score = 0.16`. A striking, independent validation surfaced directly
+from this run: the best-scoring *rejected* growth candidate was
+`96396693` — the **exact same substation** independently identified,
+months earlier from real Monte Carlo GIC results, as **Island A's #1
+real-storm redistribution hotspot** (Section 5.3). The new algorithm
+flagged that same substation as a bad addition (`redistribution_cost =
+0.0248`, ~10x any other candidate in the trace) using nothing but a
+cheap graph computation, with no prior knowledge of Island A's results —
+real evidence the metric has genuine predictive validity, not just
+internal consistency.
+
+**What hasn't been done yet, and is the actual next step**: `net_score`
+is a cheap search proxy, explicitly not validated against real dollar
+outcomes — no candidate produced by this new method has been pushed
+through the real fragility/economic pipeline (Phase 4/5) yet. Whether
+Island G is a real economic win or loss is still an open, unanswered
+question as of this writing.
+
+### 5.5 Status and honest framing for the paper
+
+As of this writing: **the SCI-driven method is a completed, negative
+result** (tested against six real candidates, found unreliable, root-
+caused, and confirmed against independent literature) — a legitimate,
+publishable finding on its own, not a failure of the investigation. **The
+redistribution-sensitivity method is mechanically validated but not yet
+economically validated** — real code, real bug-fixes grounded in real
+data, a real independent-validation signal (the `96396693` match), but
+no real $/day result yet. If Island G's real Phase 4/5 run comes back
+negative or negligible too, that is *also* a legitimate, well-evidenced
+finding worth reporting honestly — consistent with the structural
+differences this project has already identified between its own setup
+and the one real precedent (arXiv:2507.12495) where islanding
+demonstrably worked: that scenario was generation-anchored (not just
+protective), threshold-based in its damage model (not continuous), one
+piece of a much larger expert-engineered switching plan (not a
+standalone algorithmic cut), and used a small labor-only cost
+denominator (not a redistribution cost netted out the way this project's
+is). None of that makes this project's methodology wrong — it means a
+negative result here says something specific and defensible about
+protective-only, algorithmically-selected islanding under a continuous
+damage model, not about islanding as a mitigation class in general.
+
+See `ISLANDING_MITIGATION_PLAN.md` for the full phase-by-phase working
+log this section summarizes, including exact commands, real console
+output, and every intermediate finding in chronological order.
+
+---
+
+## 6. Pipeline adaptation details (deviations from the original plan)
+
+This section is the original engineering deviation log, preserved for
+anyone extending or auditing the pipeline-adaptation code specifically —
+Sections 1-5 above are the project-level narrative; this section is the
+implementation-level reference.
+
+### Key design decision: `VA_DATA_DIR` mirrors the US `DATA_DIR` layout
 
 `scripts/build_admittance_matrix.py`, `scripts/calc_storm_maxes.py`, and
 `scripts/est_gic.py` are written as standalone pipelines against a single
@@ -35,7 +571,7 @@ read directly from the original `DATA_DIR`, never copied into
 them — the SECS interpolation and Delaunay line-weighting always use the
 full site set.
 
-## Deviations discovered from the original plan
+### Deviations discovered from the original plan
 
 1. **`grid_mapping.csv` is a required, hand-annotated file, not a generated
    one.** `build_admittance_matrix.load_and_process_data()` unconditionally
@@ -175,10 +711,7 @@ full site set.
    confirmed IPOPT, `pyomo`, `rasterio`/`tobler`, the NLCD raster, and the
    SAM/technology CSVs are all present and working on the reference machine.
 
-   **What's now built, three new scripts completing the chain (all
-   untested against real data — no rasterio/tobler/torch environment in
-   this session, so treat as needing at least one fix-and-rerun cycle like
-   every other new step has):**
+   **What's built, three scripts completing the chain:**
    - `scripts/run_virginia_areal_interpolation.py` — rebuilds the Voronoi
      tessellation from Virginia+PJM's own substations (not the national
      set) clipped to PJM's states (not all of CONUS — achieved by feeding
@@ -217,7 +750,33 @@ full site set.
    separate, more advanced model not needed for these three headline
    analyses. The IPOPT path fixes still matter if that's ever exercised.
 
-## Repository layout (this repo, not the Windows path in the original plan)
+### Visualization: substation naming and figure parity with the national report
+
+`scripts/build_admittance_matrix.py` renames each substation's `SS_ID`
+(itself just the raw OSM node/way `osmid`, since most PJM-region
+`power=substation` OSM features carry no `name` tag) to `name`, and every
+downstream file — `substation_info.csv`, the GIC CSVs, `va_gic_summary.csv`
+— inherits that as `sub_id`. The real OSM name, when one exists, survives
+only in `grid_processed/ss_df.pkl`'s `SS_NAME` column, which nothing joins
+back in for reporting. `viz/plot_virginia_gic_risk.py` loads
+`ss_df.pkl` and labels each substation with `SS_NAME` when OSM has one,
+falling back to `"{operator} {voltage} substation ({lat}, {lon})"` or
+`"Unnamed substation ({lat}, {lon})"` otherwise — no code up the chain
+changes, since `sub_id` is still what every merge key is built from.
+
+`viz/plot_virginia_econ_impact.py` mirrors `viz/plots.py`'s
+`plot_econo_naics()` layout and color palette (one panel per storm
+severity, direct+indirect stacked bars per sector) reading the three
+`scripts/run_virginia_econ_analysis.py` output CSVs directly, but plots
+in `$M/day` instead of the national script's hardcoded `Bn $/day` —
+Virginia's totals (tens to low hundreds of $M/day) would otherwise
+render as barely-visible slivers under the national scale.
+
+---
+
+## 7. Repository guide
+
+### Core pipeline (Sections 2-4)
 
 ```
 configs/virginia_config.py                  Step 1 — PJM/VA parameters, output dirs
@@ -233,61 +792,65 @@ scripts/run_virginia_econ_analysis.py       Econ — VA Ghosh/Leontief IO analys
 viz/plot_virginia_network.py                Viz — VA+PJM EHV network map
 viz/plot_virginia_gic_risk.py               Viz — VA substation GIC risk map + ranking
 viz/plot_virginia_econ_impact.py            Viz — VA sector-level $/day impact bars (3 IO models)
-dc_blocker/README.md                        Placeholder — not implemented
 ```
 
-Outputs land under `data/virginia/` (gitignored, same as every other `data/`
-subdirectory) and `figures/virginia/`.
+### Islanding investigation — active
 
-## Visualization: substation naming and figure parity with the national report
+```
+scripts/virginia_risk_data.py                          Shared: raw per-substation data loaders (GIC risk, econ exposure, critical facilities, topology)
+scripts/island_graph_utils.py                           Shared: graph loading, boundary-cut math, conductance attachment
+scripts/virginia_demand_proxy.py                        Shared: population-based demand proxy (order-of-magnitude only)
+scripts/check_island_generation.py                      EIA-860 generation-capacity matching (per substation or substation pool)
+scripts/select_island_by_redistribution_sensitivity.py  Current selection algorithm (Section 5.4)
+scripts/show_seed_candidate_trace.py                    Diagnostic: full seed-candidate comparison table for a sensitivity-selected island
+scripts/run_virginia_islanded_gic.py                    Phase 4 — topology-edited GIC re-solve for any island_id
+scripts/run_virginia_islanded_fragility.py              Phase 5 — fragility Monte Carlo for any island_id
+scripts/run_virginia_islanded_econ_analysis.py          Phase 5 — econ IO analysis for any island_id
+scripts/compare_island_gic.py                           Diagnostic — GIC at an island's own members, baseline vs. islanded
+scripts/compare_virginia_gic.py                         Diagnostic — GIC across all VA substations, baseline vs. islanded (redistribution hotspots)
+scripts/compare_island_econ.py                          Diagnostic — $/day diff, island vs. baseline, by scenario
+scripts/compute_island_benefit_cost.py                  Full benefit-cost accounting (switching cost + generation-discounted own-outage cost)
+scripts/combine_islands.py                              Combine multiple already-selected islands into one for joint testing
+viz/plot_virginia_island.py                             Sanity-check figure for any island's members/boundary/growth trace
+```
 
-`scripts/build_admittance_matrix.py` renames each substation's `SS_ID`
-(itself just the raw OSM node/way `osmid`, since most PJM-region
-`power=substation` OSM features carry no `name` tag) to `name`, and every
-downstream file — `substation_info.csv`, the GIC CSVs, `va_gic_summary.csv`
-— inherits that as `sub_id`. The real OSM name, when one exists, survives
-only in `grid_processed/ss_df.pkl`'s `SS_NAME` column, which nothing joins
-back in for reporting. `viz/plot_virginia_gic_risk.py` now loads
-`ss_df.pkl` and labels each substation with `SS_NAME` when OSM has one,
-falling back to `"{operator} {voltage} substation ({lat}, {lon})"` or
-`"Unnamed substation ({lat}, {lon})"` otherwise — no code up the chain
-changes, since `sub_id` is still what every merge key is built from.
+### Islanding investigation — deprecated (`scripts/deprecated_sci_islanding/`)
 
-Prior to this fix, Virginia had two figures (`va_pjm_network.png`,
-`va_gic_risk.png`) against the national report's much larger set (sector
-economic-impact bars, hazard maps, vulnerability maps, fragility panels,
-...). `viz/plot_virginia_econ_impact.py` closes the biggest gap: it mirrors
-`viz/plots.py`'s `plot_econo_naics()` layout and color palette (one panel
-per storm severity, direct+indirect stacked bars per sector) reading the
-three `scripts/run_virginia_econ_analysis.py` output CSVs directly, but
-plots in `$M/day` instead of the national script's hardcoded `Bn $/day` —
-Virginia's totals (tens to low hundreds of $M/day) would otherwise render
-as barely-visible slivers under the national scale. It does not call
-`plot_econo_naics()` itself for this reason, and inlines
-`viz/plot_utils.ECON_PALETTES`'s two color dicts rather than importing the
-module, since `plot_utils.py` pulls in `cartopy` for mapping functions this
-script never uses.
+Kept working, not deleted; see that folder's own `README.md` for the full
+retirement rationale (Section 5.3 above summarizes it).
 
-## Execution order
+```
+compute_virginia_criticality.py    Phase 2 — SCI computation
+select_virginia_island.py          Phase 3 — SCI-driven seeded greedy region growing (incl. require_local_generation)
+check_redistribution_proxy.py      Diagnostic — current-flow-betweenness proxy that first flagged SCI's flaw
+check_generation_sci_overlap.py    Diagnostic — SCI-vs-generation overlap check (Island F's real seed validation)
+search_candidate_islands.py        Orchestrates select-and-evaluate for multiple SCI-selected candidates (used for C, D, E)
+plot_virginia_criticality.py       SCI ranking map (moved from viz/)
+plot_virginia_island.py            SCI-island sanity-check figure (moved from viz/; superseded by the active viz/plot_virginia_island.py)
+```
+
+### Placeholder, not implemented
+
+```
+dc_blocker/README.md               DC-blocker mitigation was never built in this project; do not cite it as completed work
+```
+
+Outputs land under `data/virginia/` (gitignored, same as every other
+`data/` subdirectory) and `figures/virginia/`. Real islanding candidates
+are saved as `data/virginia/network/va_island_{id}.json`.
+
+### Execution order
 
 ```bash
 export PYTHONPATH="$(pwd)"
 
-# Prerequisite (already done on the reference machine, per the original plan):
-#   data/EMTF/mt_pickle.pkl, data/geomag_data/processed_geomag_data.nc,
-#   data/storm_maxes/{maxB,maxE}_arr_testing_2.npy, data/kp_ap_indices/storm_periods.csv,
-#   data/Electric__Power_Transmission_Lines/*.shp, data/econ_data/raw_econ_data/tl_2022_us_state.zip
-
+# Core pipeline
 python scripts/build_virginia_network.py
 python scripts/extract_virginia_storm_maxes.py
 python scripts/recompute_virginia_line_voltages.py   # expensive: ~90 storms recomputed
 python scripts/run_virginia_admittance.py
 python scripts/run_virginia_gic.py                    # expensive: N_MONTE_CARLO iterations
 python scripts/extract_virginia_results.py
-
-# Economic impact chain (built but untested against real data as of this
-# writing — expect at least one fix-and-rerun cycle, same as every other
-# new step here has needed):
 python scripts/run_virginia_areal_interpolation.py
 python scripts/run_virginia_fragility.py               # expensive: sequential, likely the longest step
 python scripts/run_virginia_econ_analysis.py
@@ -296,29 +859,48 @@ python scripts/run_virginia_econ_analysis.py
 python viz/plot_virginia_network.py
 python viz/plot_virginia_gic_risk.py
 python viz/plot_virginia_econ_impact.py
+
+# Islanding: select a candidate, then push it through the same shape of pipeline
+python scripts/select_island_by_redistribution_sensitivity.py --island <id> --exclude <prior ids> --min-lines 2
+python scripts/show_seed_candidate_trace.py --island <id>
+python scripts/run_virginia_islanded_gic.py --island <id>
+python scripts/run_virginia_islanded_fragility.py --island <id>
+python scripts/run_virginia_islanded_econ_analysis.py --island <id>
+python scripts/compare_island_gic.py --island <id>
+python scripts/compare_virginia_gic.py --island <id>
+python scripts/compare_island_econ.py --island <id>
+python scripts/compute_island_benefit_cost.py --island <id>
 ```
 
 `configs/virginia_config.N_MONTE_CARLO` is set to 3000, matching the US
-run's sample size, as of the first full run against real data — confirm
-this is the final number to report with Dennies.
+run's sample size.
 
-## Open items for Dennies
+---
+
+## 8. Open items
 
 - `N_MONTE_CARLO` is set to 3000 (matching the national pipeline) as of the
   first full run against real data — confirm this is an acceptable final
   sample size, or a different number, for reported results.
-- The SAM-scope question (item 7 above) has a provisional decision —
-  national SAM/technology tables, driven by a Virginia-localized GIC
-  shock — made without Dennies' sign-off, given the ASSIP timeline.
-  Confirm or override before treating any resulting $/day figures as
-  final.
-- `IPOPT_EXEC` resolution and `econ_analysis.py`'s duplicate hardcoded path
-  are fixed (see item 7 above) — re-run `scripts/_check_econ_pipeline_deps.py`
-  to confirm `pyomo`'s `SolverFactory("ipopt")` actually solves after these
-  fixes, since the diagnostic script itself had a false-negative bug (missing
-  `pyomo.environ` import) that's separate from the two real fixes.
-- `Aaditya Bose` is building a parallel VA+PJM network independently per the
-  original plan — worth a methodology sync given `build_virginia_network.py`
-  makes several concrete choices (FERC-sjoin replaced with a PJM boundary
-  filter, 150m substation-line buffer distance, Overpass server list) that
-  another independent build may not match exactly.
+- The SAM-scope decision (Section 6, item 7) — national SAM/technology
+  tables, driven by a Virginia-localized GIC shock — was made without
+  Dennies' sign-off, given the ASSIP timeline. Confirm or override before
+  treating any resulting $/day figures as final.
+- `Aaditya Bose` is building a parallel VA+PJM network independently per
+  the original plan — worth a methodology sync given
+  `build_virginia_network.py` makes several concrete choices (FERC-sjoin
+  replaced with a PJM boundary filter, 150m substation-line buffer
+  distance, Overpass server list) that another independent build may not
+  match exactly.
+- **Island G has not yet been run through the real fragility/economic
+  pipeline** — the single most important open item for the islanding
+  section of the paper. Until that real result exists, Section 5's
+  redistribution-sensitivity method should be described as mechanically
+  validated, not as a demonstrated economic improvement.
+- If Island G's real result is negative or negligible, worth deciding
+  whether to (a) report the SCI-method's and the sensitivity-method's
+  results honestly as a joint negative finding for protective-only
+  islanding in Virginia specifically, with the structural reasons this
+  differs from the one real precedent case (Section 5.5), or (b) pursue
+  the field's actual gold-standard approach (exact optimization over the
+  GIC circuit, or PowerModelsGMD.jl) as a further rung, time permitting.
