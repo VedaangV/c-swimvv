@@ -40,6 +40,19 @@ def main(island_id: str = "a"):
     print(df.to_string(index=False))
     print(f"\nChosen seed: {island['seed']} (member_count ended at {island['member_count']})")
 
+    stop_reason = island.get("stop_reason")
+    if stop_reason:
+        print(f"Growth stopped: {stop_reason}")
+        rejected = island.get("rejected_candidate")
+        if rejected:
+            print(
+                f"  Best rejected growth candidate: {rejected['candidate']} -- would-be net_score "
+                f"{rejected['net_score']:.4f} (benefit={rejected['benefit']:.4f}, "
+                f"redistribution_cost={rejected['redistribution_cost']:.4f}, "
+                f"switching_cost={rejected['switching_cost']:.2f}) -- WAS considered, made things "
+                "worse, not just 'no better'."
+            )
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Show a redistribution-sensitivity island's seed_candidate_trace.")

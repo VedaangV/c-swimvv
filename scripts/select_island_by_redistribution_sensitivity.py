@@ -350,11 +350,18 @@ def select_island_by_sensitivity(
     }]
 
     hit_cap = False
+    stop_reason = None
+    rejected_candidate = None
     while len(island) < max_size:
         boundary = current_eval["boundary"]
         candidates = {v for (u, v) in boundary if u in island} | {u for (u, v) in boundary if v in island}
         candidates = {c for c in candidates if c not in island and c in eligible_nodes}
         if not candidates:
+            stop_reason = "no_eligible_neighbors"
+            logger.info(
+                f"Growth stopped at {len(island)} member(s): no eligible neighbors left on the "
+                "boundary to consider (not that a candidate was evaluated and rejected)."
+            )
             break
 
         best_candidate, best_candidate_eval = None, None
@@ -367,7 +374,19 @@ def select_island_by_sensitivity(
                 best_candidate, best_candidate_eval = c, trial_eval
 
         if best_candidate_eval["net_score"] <= current_eval["net_score"]:
-            break  # no candidate improves net_score -- growth is done
+            stop_reason = "no_improving_candidate"
+            rejected_candidate = {
+                "candidate": best_candidate,
+                **{k: v for k, v in best_candidate_eval.items() if k != "boundary"},
+            }
+            logger.info(
+                f"Growth stopped at {len(island)} member(s): the best of {len(candidates)} evaluated "
+                f"candidate(s), {best_candidate}, WAS considered and rejected -- its net_score "
+                f"({best_candidate_eval['net_score']:.4f}) would be worse than the current island's "
+                f"({current_eval['net_score']:.4f}), i.e. adding it makes things worse, not just "
+                "'no better'."
+            )
+            break
 
         island.add(best_candidate)
         prev_score = current_eval["net_score"]
@@ -379,6 +398,7 @@ def select_island_by_sensitivity(
         })
     else:
         hit_cap = True
+        stop_reason = "max_size_reached"
         logger.warning(
             f"Island growth hit the {max_size}-substation safety cap without net_score naturally "
             "turning over -- worth reviewing risk weights or switching_cost_weight."
@@ -401,6 +421,8 @@ def select_island_by_sensitivity(
         "total_protected_risk_weight": current_eval["benefit"],
         "net_score": current_eval["net_score"],
         "hit_size_cap": hit_cap,
+        "stop_reason": stop_reason,
+        "rejected_candidate": rejected_candidate,
         "seed_candidate_trace": seed_candidate_trace,
         "growth_trace": trace,
     }
@@ -445,7 +467,13 @@ def main(
         f"{island['boundary_line_count']} boundary lines cut (voltage-weighted cost "
         f"{island['voltage_weighted_cost']:.2f}). net_score={island['net_score']:.4f} "
         f"(benefit={island['total_protected_risk_weight']:.4f}, "
-        f"redistribution_cost={island['redistribution_cost']:.4f})."
+        f"redistribution_cost={island['redistribution_cost']:.4f}). "
+        f"Growth stopped: {island['stop_reason']}"
+        + (
+            f" (best rejected candidate: {island['rejected_candidate']['candidate']}, would-be "
+            f"net_score {island['rejected_candidate']['net_score']:.4f})"
+            if island["rejected_candidate"] else ""
+        )
     )
     logger.info(f"Members: {island['members']}")
     logger.info("Growth trace:\n" + "\n".join(
