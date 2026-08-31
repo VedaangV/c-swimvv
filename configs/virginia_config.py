@@ -79,6 +79,25 @@ VA_ISLAND_A_GND_GIC_DIR = VA_DATA_DIR / "gnd_gic_island_a"
 VA_ISLAND_A_ECON_DIR = VA_ECON_DIR / "island_a"
 
 
+def get_directional_check_dirs(island_id: str) -> dict:
+    """gic_dir/gnd_gic_dir for scripts/validate_island_directionality.py's
+    single-iteration real-storm check (Phase 6c, ISLANDING_MITIGATION_PLAN.md)
+    -- deliberately separate from get_island_dirs(island_id) below, which
+    holds a candidate's full N_MONTE_CARLO-iteration Phase 4/5 output. This
+    check only ever writes iteration 0 (one real admittance/GIC solve, not
+    a full Monte Carlo), and is meant to run BEFORE a candidate has earned
+    the expensive full run -- keeping it in its own directory means a
+    single-iteration file can never be mistaken for (or collide with) a
+    real, complete Phase 4 run for the same island_id."""
+    dirs = {
+        "gic_dir": VA_DATA_DIR / f"gic_directional_check_{island_id}",
+        "gnd_gic_dir": VA_DATA_DIR / f"gnd_gic_directional_check_{island_id}",
+    }
+    for d in dirs.values():
+        d.mkdir(parents=True, exist_ok=True)
+    return dirs
+
+
 def get_island_dirs(island_id: str) -> dict:
     """gic_dir/gnd_gic_dir/econ_dir for a given island id ("a", "b", ...) --
     island_id="a" resolves to exactly VA_ISLAND_A_GIC_DIR/VA_ISLAND_A_GND_GIC_DIR/

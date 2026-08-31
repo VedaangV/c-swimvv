@@ -512,7 +512,98 @@ through the real fragility/economic pipeline (Phase 4/5) yet. Whether
 Island G is a real economic win or loss is still an open, unanswered
 question as of this writing.
 
-### 5.5 Status and honest framing for the paper
+### 5.5 Directional blindness: why an "average" scenario is not a real storm
+
+`redistribution_cost` (Section 5.4) is deliberately cheap — it recomputes
+current-flow betweenness (Newman 2005; Brandes & Fleischer 2005) on the
+rest of the network after a candidate cut. That computation has no storm
+direction in it at all: it models current flowing between every pair of
+nodes in proportion to conductance, isotropically — effectively an
+*average over all possible directions*, not a measurement of what any one
+real storm would do to this specific topology.
+
+Real storms are not direction-neutral, and this pipeline's own data makes
+that precise. `scripts/est_gic.py`'s `load_and_process_gic_data` treats the
+twelve storm scenarios it can solve for very differently:
+
+- **Three real historical events** — Gannon (2024), Halloween (2003), St.
+  Patrick's Day (2015) — each carry their own independently-measured
+  per-line E-field, magnitude *and* polarity, straight from magnetotelluric
+  data. These are genuinely different directional forcings.
+- **Nine statistical return-period scenarios** (50-250yr, the ones used
+  throughout Section 4's econ Monte Carlo) get their *magnitude* from a
+  lognormal return-period fit, but their per-line *sign* is deliberately
+  forced to match Gannon's own observed polarity (`sgn_full`) rather than
+  drawn independently. They are not a fourth, fifth, ... source of real
+  directional information — they are magnitude variations on Gannon's own
+  direction.
+
+This was found empirically before it was found in the code. Pushing Island
+G through the real single-storm GIC solve (not the topology-only proxy)
+showed its own members' GIC **increasing** under the real Gannon forcing
+(+56.23A) but **decreasing** under the 100-year return-period forcing
+(-59.01A) — opposite signs, despite 100yr sharing Gannon's polarity — and
+the single dominant redistribution-hotspot substation was completely
+different between the two (`96396693` for 100yr vs. `96284749` for
+Gannon). A candidate whose `net_score` looks good against the isotropic
+proxy, or even against several of the return-period scenarios, has not
+been checked against a real storm's actual direction — the two can and do
+disagree.
+
+Practically, there is no way around this by picking the storm's direction
+in advance: no forecasting capability gives a specific incoming storm's
+regional geoelectric-field direction more than roughly an hour of lead
+time (real-time L1 solar wind/IMF monitoring via ACE/DSCOVR), and precise,
+substation-resolved directional geoelectric-field forecasting beyond that
+is an open research problem (Kelly et al.; the LSTM/"LiveWire" GIC-
+forecasting literature, Hu et al. 2024). So the right response is not
+"predict the direction and select accordingly" but "check whether a
+candidate holds up across the range of real directions actually observed,"
+which is what Section 5.6 below does.
+
+### 5.6 Phase 6c: cheap real-storm directional validation (the middle ground)
+
+**`scripts/validate_island_directionality.py`.** Re-running the full
+Phase 4/5 Monte Carlo (thousands of iterations, "a good overnight job")
+for every candidate the cheap search produces would defeat the point of
+having a cheap search — but trusting `net_score` alone is exactly the
+blindness Section 5.5 just described. The middle ground: for each finalist
+candidate, run **one** real admittance/GIC solve (iteration 0 only,
+`start_idx=0, end_idx=1` — ~1/`N_MONTE_CARLO` the cost of a full run) with
+that candidate's boundary actually cut, using the *same* seed draw as an
+equivalent single-iteration baseline (so any difference is attributable to
+the topology change, not random noise). Comparing the two across all
+twelve available storm forcings gives, per storm:
+
+- `own_effect` — the risk-weighted change in `|GIC|` summed over the
+  candidate's own members (the real-physics analog of `benefit`).
+- `redistribution_cost_real` — the same, summed over the rest of the
+  network (the real-physics analog of `redistribution_cost`), using
+  `|GIC|` rather than signed GIC since it's magnitude that drives
+  transformer fragility, not direction.
+
+A candidate is flagged **directionally consistent** if
+`redistribution_cost_real`'s sign agrees across all three genuinely
+independent real storms — gannon, halloween, st_patricks (the nine
+return-period scenarios are reported alongside for continuity with
+Section 4's results, but are not treated as independent directional
+evidence, per Section 5.5). A candidate that flips sign between the three
+real storms is **directionally fragile** — exactly the failure mode Island
+G's Gannon-vs-100yr divergence demonstrated — and should not be committed
+to a full Phase 4/5 run without treating that as an open question, not a
+settled result.
+
+This does not replace Phase 4/5, and produces no $/day figure — it is a
+cheap filter between the topology-only search and the expensive real
+pipeline, reusing the exact admittance/GIC machinery
+(`scripts/run_virginia_gic.py`) Phase 4 already uses, just for one
+iteration instead of a full Monte Carlo. **Not yet run against real data**
+as of this writing (no real Virginia data is available in the environment
+this was implemented in) — the next step is running it against Island G
+(and any further candidates) on real data, alongside finally pushing a
+directionally-consistent candidate through the full Phase 4/5 pipeline.
+
+### 5.7 Status and honest framing for the paper
 
 As of this writing: **the SCI-driven method is a completed, negative
 result** (tested against six real candidates, found unreliable, root-
@@ -901,6 +992,13 @@ run's sample size.
   whether to (a) report the SCI-method's and the sensitivity-method's
   results honestly as a joint negative finding for protective-only
   islanding in Virginia specifically, with the structural reasons this
-  differs from the one real precedent case (Section 5.5), or (b) pursue
+  differs from the one real precedent case (Section 5.7), or (b) pursue
   the field's actual gold-standard approach (exact optimization over the
   GIC circuit, or PowerModelsGMD.jl) as a further rung, time permitting.
+- **`scripts/validate_island_directionality.py` (Section 5.6) has not yet
+  been run against real data** — implemented and reasoned through, but no
+  real Virginia data was available in the environment it was written in.
+  Run it on Island G (and any further candidates) before committing any of
+  them to a full Phase 4/5 run: a candidate that fails the directional-
+  consistency check should not be reported as validated even if its
+  `net_score` and its return-period econ scenarios look positive.
