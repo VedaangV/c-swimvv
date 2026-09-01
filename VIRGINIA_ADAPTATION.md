@@ -505,12 +505,23 @@ cheap graph computation, with no prior knowledge of Island A's results —
 real evidence the metric has genuine predictive validity, not just
 internal consistency.
 
-**What hasn't been done yet, and is the actual next step**: `net_score`
-is a cheap search proxy, explicitly not validated against real dollar
-outcomes — no candidate produced by this new method has been pushed
-through the real fragility/economic pipeline (Phase 4/5) yet. Whether
-Island G is a real economic win or loss is still an open, unanswered
-question as of this writing.
+**Pushed through the real fragility/economic pipeline (Phase 4/5): Island
+G is 9/10 scenarios net-positive.** The one exception is the real Gannon
+storm scenario, which is net-negative — `diff_per_day_musd = -1.089293`,
+own-outage cost $0.0129M (0% generation coverage, undiscounted), switching
+cost $0.05M (2 lines), `net_musd` (mid_365d variant) = **-397.66**. This
+makes Island G the strongest real result of any candidate produced so
+far — a higher net-positive fraction than Island F's 6/10, and without
+Island F's generation-anchoring constraint on seed choice. It's also the
+clearest concrete demonstration of Section 5.5's directional-blindness
+finding: the one scenario where G loses is the one genuinely independent
+real storm in the 10-scenario set, and Section 5.6's real-storm check
+later confirmed (see below) that Halloween and St. Patrick's Day — the
+other two real, independently-directional storms — pattern-match Gannon's
+own-member/rest-of-network signature rather than the nine return-period
+scenarios', suggesting the true real-storm win rate may be closer to 0/3
+than 9/10 once (if) those two are pushed through the full econ pipeline
+too, not just checked at the raw-GIC level.
 
 ### 5.5 Directional blindness: why an "average" scenario is not a real storm
 
@@ -597,11 +608,24 @@ This does not replace Phase 4/5, and produces no $/day figure — it is a
 cheap filter between the topology-only search and the expensive real
 pipeline, reusing the exact admittance/GIC machinery
 (`scripts/run_virginia_gic.py`) Phase 4 already uses, just for one
-iteration instead of a full Monte Carlo. **Not yet run against real data**
-as of this writing (no real Virginia data is available in the environment
-this was implemented in) — the next step is running it against Island G
-(and any further candidates) on real data, alongside finally pushing a
-directionally-consistent candidate through the full Phase 4/5 pipeline.
+iteration instead of a full Monte Carlo.
+
+**Run against real data on Island G**: `directionally_consistent_across_
+real_storms = True` (gannon, halloween, st_patricks all agree with each
+other), but the more important result is in the numbers, not the flag.
+Every one of the three real storms shows `own_effect` positive and
+`redistribution_cost_real` negative (island's own members get worse, rest
+of network gets better); every one of the nine return-period scenarios
+shows the opposite (own members better, rest of network worse) — a clean,
+unanimous split between the two groups, not noise. Since 9 of the 10
+scenarios in Island G's econ result (Section 5.4/Section 8) are drawn
+from the return-period family, this raises a real possibility that the
+"9/10 positive" econ verdict is dominated by scenarios systematically
+unlike any real storm, while the one real scenario in that set (Gannon)
+came back negative for the reason this section predicts. Halloween and
+St. Patrick's Day have not yet been pushed through the full fragility/econ
+pipeline to get real `net_musd` figures — that's the next concrete step,
+not just running this check on further candidates.
 
 ### 5.7 Status and honest framing for the paper
 
@@ -983,22 +1007,25 @@ run's sample size.
   replaced with a PJM boundary filter, 150m substation-line buffer
   distance, Overpass server list) that another independent build may not
   match exactly.
-- **Island G has not yet been run through the real fragility/economic
-  pipeline** — the single most important open item for the islanding
-  section of the paper. Until that real result exists, Section 5's
-  redistribution-sensitivity method should be described as mechanically
-  validated, not as a demonstrated economic improvement.
-- If Island G's real result is negative or negligible, worth deciding
-  whether to (a) report the SCI-method's and the sensitivity-method's
-  results honestly as a joint negative finding for protective-only
-  islanding in Virginia specifically, with the structural reasons this
-  differs from the one real precedent case (Section 5.7), or (b) pursue
-  the field's actual gold-standard approach (exact optimization over the
-  GIC circuit, or PowerModelsGMD.jl) as a further rung, time permitting.
-- **`scripts/validate_island_directionality.py` (Section 5.6) has not yet
-  been run against real data** — implemented and reasoned through, but no
-  real Virginia data was available in the environment it was written in.
-  Run it on Island G (and any further candidates) before committing any of
-  them to a full Phase 4/5 run: a candidate that fails the directional-
-  consistency check should not be reported as validated even if its
-  `net_score` and its return-period econ scenarios look positive.
+- **Resolved: Island G's real fragility/economic result is 9/10
+  scenarios net-positive** (Section 5.4) — the strongest real result of
+  any candidate so far, and no longer an open item on its own. The open
+  question shifted, not closed: the one negative scenario is the real
+  Gannon storm, and `scripts/validate_island_directionality.py` (run
+  against real data, Section 5.6) confirms Gannon is not an isolated
+  fluke — Halloween and St. Patrick's Day, the only other genuinely
+  independent real storms available, both pattern-match Gannon's
+  own-member/rest-of-network signature at the raw-GIC level rather than
+  the nine return-period scenarios' pattern. **Halloween and St.
+  Patrick's Day have not been pushed through the full fragility/econ
+  pipeline** (only Gannon has a real `net_musd` figure) — this is now the
+  single most important open item: without it, "9/10 positive" and "0/3
+  real storms positive" are both consistent with the same underlying
+  data, and only one of them is knowable right now.
+- Generation-anchoring (Island F) is no longer worth further investment:
+  Island G, selected with no generation requirement at all, beat F's 6/10
+  with 9/10 — restricting seed choice to generation-backed substations
+  (Section 5.4's finding that best-SCI and generation-backed substations
+  barely overlap in Virginia) looks like a net cost to candidate quality,
+  not a benefit, once the redistribution-sensitivity method itself is
+  doing the selecting.
