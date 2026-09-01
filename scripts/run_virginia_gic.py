@@ -37,17 +37,34 @@ extending it directly here is the right level to make this change at.
 Defaults (exclude_line_ids=None, gic_dir=VA_GIC_DIR, gnd_gic_dir=
 VA_GND_GIC_DIR) reproduce the exact original baseline behavior.
 
-Line removal happens once, on the full df_lines, before the Monte Carlo
-loop starts -- deterministic topology edit, not a per-sample stochastic
-effect like apply_random_line_dc_blocking()'s per-iteration DC-blocker
-mask (which still applies on top, now operating on the reduced line set).
-Removing a line here means it contributes nothing to either the admittance
-matrix (network_admittance()/random_admittance_matrix() iterate whatever
-df_lines they're handed) or the geoelectric injection currents
-(get_injection_currents() sums per-line contributions from the same
-df_lines) -- both consume the identical filtered table, so no other
-structure (buses, transformers, grounding) needs to change for the
-substations that remain connected via other paths.
+Line removal happens once, per call, on the full df_lines, before that
+call's Monte Carlo iterations start -- deterministic topology edit, not a
+per-sample stochastic effect like apply_random_line_dc_blocking()'s
+per-iteration DC-blocker mask (which still applies on top, now operating
+on the reduced line set). Removing a line here means it contributes
+nothing to either the admittance matrix (network_admittance()/
+random_admittance_matrix() iterate whatever df_lines they're handed) or
+the geoelectric injection currents (get_injection_currents() sums
+per-line contributions from the same df_lines) -- both consume the
+identical filtered table, so no other structure (buses, transformers,
+grounding) needs to change for the substations that remain connected via
+other paths.
+
+PHASE 6c/6d EXTENSION: main()'s body is split into load_gic_context()
+(everything expensive and exclude_line_ids-independent: network topology,
+the N_MONTE_CARLO transformer-composition samples, storm E-field data --
+~10-20s of load time per scripts/validate_island_directionality.py's real
+logs) and run_monte_carlo(ctx, ...) (the actual per-iteration solve loop,
+now taking that pre-loaded context instead of reloading it). main() itself
+is unchanged -- still `load_gic_context()` then `run_monte_carlo()` once --
+so every existing caller (run_virginia_islanded_gic.py,
+validate_island_directionality.py) keeps working identically. The reason
+for the split: scripts/real_storm_gic.py's real-storm-scored search needs
+one single-iteration solve PER CANDIDATE CUT during island selection
+(potentially dozens per search run) -- paying the ~10-20s load cost fresh
+for every candidate would make the search impractically slow, so it loads
+the context once and calls run_monte_carlo() directly, many times, reusing
+it.
 """
 
 import argparse
@@ -84,13 +101,13 @@ logger = setup_logger(log_file="logs/run_virginia_gic.log")
 VA_RESULTS_PATH = "statistical_analysis/va_geomagnetic_data_return_periods.h5"
 
 
-def main(
-    start_idx: int = 0,
-    end_idx: int | None = None,
-    exclude_line_ids: set | None = None,
-    gic_dir=VA_GIC_DIR,
-    gnd_gic_dir=VA_GND_GIC_DIR,
-):
+def load_gic_context() -> dict:
+    """Everything main() used to do before its Monte Carlo loop --
+    network topology, transformer-composition samples, storm E-field data
+    -- with nothing in it depending on exclude_line_ids or which
+    iteration(s) will be run. Load once, pass the result to run_monte_
+    carlo() as many times as needed -- see PHASE 6c/6d EXTENSION in the
+    module docstring for why this split exists."""
     # get_transformer_samples()/process_substation_buses() read/write a
     # module-level DATA_LOC in build_admittance_matrix.py, not a parameter.
     bam.DATA_LOC = VA_DATA_DIR
@@ -110,6 +127,45 @@ def main(
         load_and_process_gic_data(VA_DATA_DIR, df_lines, VA_RESULTS_PATH)
     )
 
+    sub_ref = dict(zip(df_substations_info.name, df_substations_info.buses))
+    n_nodes = len(sub_look_up)
+
+    return {
+        "substation_buses": substation_buses,
+        "bus_ids_map": bus_ids_map,
+        "sub_look_up": sub_look_up,
+        "df_lines": df_lines,
+        "df_substations_info": df_substations_info,
+        "trafos_data": trafos_data,
+        "sub_ref": sub_ref,
+        "n_nodes": n_nodes,
+        "v_cols": v_cols,
+    }
+
+
+def run_monte_carlo(
+    ctx: dict,
+    start_idx: int = 0,
+    end_idx: int | None = None,
+    exclude_line_ids: set | None = None,
+    gic_dir=VA_GIC_DIR,
+    gnd_gic_dir=VA_GND_GIC_DIR,
+):
+    """The actual per-iteration solve loop, operating on an already-loaded
+    ctx (load_gic_context()). exclude_line_ids filtering happens fresh on
+    a LOCAL copy of ctx["df_lines"] every call -- ctx itself is never
+    mutated, so the same context is safe to reuse across many calls with
+    different exclude_line_ids (different candidate cuts)."""
+    substation_buses = ctx["substation_buses"]
+    bus_ids_map = ctx["bus_ids_map"]
+    sub_look_up = ctx["sub_look_up"]
+    df_lines = ctx["df_lines"]
+    df_substations_info = ctx["df_substations_info"]
+    trafos_data = ctx["trafos_data"]
+    sub_ref = ctx["sub_ref"]
+    n_nodes = ctx["n_nodes"]
+    v_cols = ctx["v_cols"]
+
     if exclude_line_ids:
         exclude_line_ids = {str(x) for x in exclude_line_ids}
         before = len(df_lines)
@@ -126,9 +182,6 @@ def main(
                 "mismatch between va_island_a.json and this run's transmission_lines.csv). "
                 "Investigate before trusting the islanded results."
             )
-
-    sub_ref = dict(zip(df_substations_info.name, df_substations_info.buses))
-    n_nodes = len(sub_look_up)
 
     logger.info(f"Starting VA+PJM GIC Monte Carlo ({len(trafos_data)} samples)...")
     for i, trafo_data in enumerate(trafos_data):
@@ -250,6 +303,26 @@ def main(
         gc.collect()
 
     logger.info("Virginia+PJM GIC Monte Carlo complete.")
+
+
+def main(
+    start_idx: int = 0,
+    end_idx: int | None = None,
+    exclude_line_ids: set | None = None,
+    gic_dir=VA_GIC_DIR,
+    gnd_gic_dir=VA_GND_GIC_DIR,
+):
+    """Unchanged behavior/signature from before the load_gic_context()/
+    run_monte_carlo() split -- every existing caller (run_virginia_
+    islanded_gic.py, validate_island_directionality.py) keeps working
+    identically. A caller that needs many solves in one process (real-
+    storm-scored island selection) should call load_gic_context() once
+    and run_monte_carlo() directly instead of this."""
+    ctx = load_gic_context()
+    run_monte_carlo(
+        ctx, start_idx=start_idx, end_idx=end_idx, exclude_line_ids=exclude_line_ids,
+        gic_dir=gic_dir, gnd_gic_dir=gnd_gic_dir,
+    )
 
 
 if __name__ == "__main__":

@@ -34,8 +34,8 @@ import pandas as pd
 
 from configs import setup_logger
 from configs.virginia_config import VA_ECON_DIR, VA_NETWORK_DIR
-import scripts.check_island_generation as gen_check
-from scripts.virginia_demand_proxy import estimate_demand_mw, load_population_lookup
+import scripts.deprecated_sci_islanding.check_island_generation as gen_check
+from scripts.deprecated_sci_islanding.virginia_demand_proxy import estimate_demand_mw, load_population_lookup
 
 logger = setup_logger(log_file="logs/check_generation_sci_overlap.log")
 

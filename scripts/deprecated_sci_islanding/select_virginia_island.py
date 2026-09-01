@@ -125,7 +125,7 @@ import pandas as pd
 
 from configs import setup_logger
 from configs.virginia_config import VA_ECON_DIR, VA_NETWORK_DIR
-import scripts.check_island_generation as gen_check
+import scripts.deprecated_sci_islanding.check_island_generation as gen_check
 from scripts.island_graph_utils import (
     load_graph,
     boundary_edges as _boundary_edges,

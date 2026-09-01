@@ -627,7 +627,48 @@ St. Patrick's Day have not yet been pushed through the full fragility/econ
 pipeline to get real `net_musd` figures — that's the next concrete step,
 not just running this check on further candidates.
 
-### 5.7 Status and honest framing for the paper
+### 5.7 Phase 6d: generation removed; the search scored by real storms
+
+**Generation-anchoring removed from active code, not just deprecated.**
+`scripts/check_island_generation.py` and `scripts/virginia_demand_proxy.py`
+moved to `scripts/deprecated_sci_islanding/`; `compute_island_benefit_
+cost.py`'s own-outage cost is unconditional again, no generation-coverage
+discount. Settled by direct comparison: Island G, selected with zero
+generation requirement, reached 9/10 net-positive, beating
+generation-anchored Island F's 6/10.
+
+**The search itself is now scored by real storms, not
+`current_flow_betweenness_centrality`.** Section 5.6's real-storm check
+was a post-hoc filter applied *after* selection already picked a winner
+with the isotropic proxy — exactly how Island G could pass selection and
+still lose on the one real, independent-direction storm (Gannon) in its
+econ set. `evaluate_cut()` now scores every candidate by one real
+single-iteration admittance/GIC solve against gannon/halloween/
+st_patricks, taking the **worst case across the three, not the
+average** — directly targeting "a method that is positive for all
+cases" rather than positive on average. `scripts/run_virginia_gic.py`
+was split into a reusable `load_gic_context()` (expensive, one-time) and
+`run_monte_carlo()` (the actual per-iteration solve) so a search
+evaluating dozens of candidates pays the setup cost once, not per
+candidate; `scripts/real_storm_gic.py` holds the shared real-storm
+scoring logic used by both the search and Section 5.6's check (which was
+refactored onto it too, removing duplication).
+
+One real admittance solve already computes all twelve storm columns at
+once, so scoring against three real storms costs the same as scoring
+against one — but that one solve still costs ~20-40s on real data,
+versus the old proxy's near-instant graph computation, so a full search
+run now takes meaningfully longer. `SWITCHING_COST_WEIGHT`/
+`REDISTRIBUTION_COST_WEIGHT` need a third real-data calibration pass —
+the new redistribution_cost lives in raw risk-weighted `|GIC|` amps, a
+completely different scale than the old normalized betweenness units.
+
+**Status: implemented, not yet run against real data** (no real Virginia
+data available in the environment this was implemented in). See
+`ISLANDING_MITIGATION_PLAN.md`'s Phase 6d for the full implementation
+log.
+
+### 5.8 Status and honest framing for the paper
 
 As of this writing: **the SCI-driven method is a completed, negative
 result** (tested against six real candidates, found unreliable, root-

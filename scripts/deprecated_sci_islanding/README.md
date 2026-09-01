@@ -70,6 +70,25 @@ Two compounding problems, diagnosed over the course of this project:
    mattering. See `ISLANDING_MITIGATION_PLAN.md`'s Phase 6 section for
    the full trace of this reasoning.
 
+## Generation-anchoring is retired too (moved here later, not part of the original SCI retirement above)
+
+`check_island_generation.py` and `virginia_demand_proxy.py` were still
+active (used by `scripts/compute_island_benefit_cost.py` to discount an
+island's own-outage cost by matched EIA-860 generation coverage) after
+the SCI method itself was retired — moved here once that stopped being
+true too. The direct comparison settled it: Island G, selected by the
+*current* method (`select_island_by_redistribution_sensitivity.py`) with
+no generation requirement at all, reached 9/10 scenarios net-positive —
+better than Island F's 6/10, without constraining seed choice to the
+substations where generation happens to exist. Combined with the earlier
+finding that best-redistribution-sensitivity and generation-backed
+substations barely overlap in Virginia (Section 5.4,
+`VIRGINIA_ADAPTATION.md`), requiring or crediting generation looks like a
+net cost to candidate quality now, not a benefit — so
+`compute_island_benefit_cost.py`'s own-outage cost is unconditional
+again (no coverage discount), matching how every island except F was
+already being scored.
+
 ## What's in this folder
 
 | File | Was |
@@ -81,6 +100,8 @@ Two compounding problems, diagnosed over the course of this project:
 | `search_candidate_islands.py` | Orchestrates select-and-evaluate for multiple SCI-selected candidates in sequence (used for C, D, E). |
 | `plot_virginia_criticality.py` (moved from `viz/`) | SCI ranking map. |
 | `plot_virginia_island.py` (moved from `viz/`) | Sanity-check figure for one SCI-selected island's members/boundary/growth trace. |
+| `check_island_generation.py` (moved from `scripts/`) | EIA-860 generation-capacity matching -- fed `require_local_generation` seed-anchoring above, and later `compute_island_benefit_cost.py`'s own-outage discount, until that was also retired (see below). |
+| `virginia_demand_proxy.py` (moved from `scripts/`) | Population-based demand proxy -- existed only to compute generation-coverage ratios for the discount above. |
 
 ## What's still active and shared
 
@@ -94,8 +115,6 @@ selector) doesn't depend on deprecated code:
 - `scripts/island_graph_utils.py` — graph structure utilities (load the
   network graph, compute a boundary cut, cost it, attach real
   conductance for current-flow analysis).
-- `scripts/virginia_demand_proxy.py` — population-based demand proxy,
-  used by `scripts/compute_island_benefit_cost.py`.
 
 Everything downstream of *selecting* an island (Phase 4's topology-edited
 GIC re-solve, Phase 5's fragility/econ re-evaluation, the GIC/econ

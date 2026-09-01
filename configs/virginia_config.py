@@ -98,6 +98,27 @@ def get_directional_check_dirs(island_id: str) -> dict:
     return dirs
 
 
+def get_search_scratch_dirs() -> dict:
+    """gic_dir/gnd_gic_dir for scripts/real_storm_gic.py's per-candidate
+    single-iteration solves during island SEARCH (as opposed to checking
+    one already-selected finalist, which uses get_directional_check_dirs
+    below) -- one shared, reused, repeatedly-overwritten scratch location,
+    not one directory per candidate. A search evaluates dozens of
+    candidates that are never saved as a real island, so giving each its
+    own permanent directory would just accumulate scratch files; reusing
+    one location works because scripts.real_storm_gic.solve_single_
+    iteration() always deletes the previous candidate's output before
+    solving the next one -- see that function's docstring for why that
+    matters here specifically."""
+    dirs = {
+        "gic_dir": VA_DATA_DIR / "gic_search_scratch",
+        "gnd_gic_dir": VA_DATA_DIR / "gnd_gic_search_scratch",
+    }
+    for d in dirs.values():
+        d.mkdir(parents=True, exist_ok=True)
+    return dirs
+
+
 def get_island_dirs(island_id: str) -> dict:
     """gic_dir/gnd_gic_dir/econ_dir for a given island id ("a", "b", ...) --
     island_id="a" resolves to exactly VA_ISLAND_A_GIC_DIR/VA_ISLAND_A_GND_GIC_DIR/

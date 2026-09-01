@@ -1,15 +1,33 @@
 """
-Phase 6c of ISLANDING_MITIGATION_PLAN.md: a cheap, real-physics directional
-check on a handful of finalist candidates before committing any of them to
-the expensive full Phase 4/5 pipeline (N_MONTE_CARLO-iteration GIC Monte
-Carlo + fragility + econ).
+Phase 6c of ISLANDING_MITIGATION_PLAN.md: a real-physics directional
+report on a handful of finalist candidates, using ALL twelve available
+storm scenarios (not just the three real ones the search itself now
+scores against -- see UPDATED ROLE below), before committing any of them
+to the expensive full Phase 4/5 pipeline (N_MONTE_CARLO-iteration GIC
+Monte Carlo + fragility + econ).
 
-WHY THIS EXISTS
+UPDATED ROLE (Phase 6d superseded this script's original job)
+-----------------------------------------------------------------
+This script was originally the ONLY place real-storm data entered the
+islanding pipeline -- a post-hoc filter applied after
+scripts/select_island_by_redistribution_sensitivity.py picked a winner
+using the isotropic, direction-blind current_flow_betweenness_centrality
+proxy (see WHY THIS EXISTS below for why that proxy can't see a real
+storm's directional forcing). Phase 6d moved real-storm scoring INTO that
+search itself (evaluate_cut() now scores every candidate's worst-case
+`redistribution_cost_real` across gannon/halloween/st_patricks directly,
+replacing the betweenness proxy entirely) -- so a candidate coming out of
+selection is no longer "direction-blind by construction, unchecked until
+here." This script's remaining job: report the FULL twelve-scenario
+picture (not just the three the search's worst-case scoring uses) for a
+finalist, as a final sanity check and for continuity with the rest of the
+project's 10-scenario econ results -- not the only real-storm check left
+in the pipeline.
+
+WHY THIS EXISTS (background -- the diagnosis this script and Phase 6d
+both trace back to)
 ---------------
-scripts/select_island_by_redistribution_sensitivity.py's `redistribution_cost`
-is deliberately cheap: it recomputes current_flow_betweenness_centrality on
-the rest of the network after a candidate cut and compares it to a one-time
-baseline. That betweenness computation has no storm in it at all -- it
+current_flow_betweenness_centrality has no storm in it at all -- it
 models current flowing between every pair of nodes in proportion to
 conductance, the same regardless of which direction a real storm's
 geoelectric field happens to point. It is, in effect, an *average over all
@@ -84,142 +102,54 @@ Usage:
 import argparse
 import json
 
-import pandas as pd
-
 from configs import setup_logger
-from configs.virginia_config import (
-    VA_NETWORK_DIR,
-    VA_GIC_DIR,
-    VA_GND_GIC_DIR,
-    get_directional_check_dirs,
+from configs.virginia_config import VA_NETWORK_DIR, get_directional_check_dirs
+from scripts.real_storm_gic import (
+    REAL_HISTORICAL_STORMS,
+    ALL_STORM_PERIODS,
+    solve_single_iteration,
+    ensure_baseline_single_iteration,
+    real_storm_redistribution,
 )
-from scripts.est_gic import return_periods
-from scripts.run_virginia_gic import main as run_gic_main
+from scripts.run_virginia_gic import load_gic_context
 from scripts.run_virginia_islanded_gic import load_island
 from scripts.select_island_by_redistribution_sensitivity import load_risk_weights
 
 logger = setup_logger(log_file="logs/validate_island_directionality.log")
 
-# The only three genuinely independent real directional forcings this
-# pipeline has -- each with its own measured per-line E-field magnitude AND
-# polarity (see module docstring). The real directional test.
-REAL_HISTORICAL_STORMS = ["gannon", "halloween", "st_patricks"]
 
-# Magnitude-only variation on Gannon's own polarity (see module docstring) --
-# reported for continuity with the rest of the project's 10-scenario econ
-# results, but NOT treated as an independent directional data point.
-RETURN_PERIOD_STORMS = [str(p) for p in return_periods]
-
-ALL_STORM_PERIODS = REAL_HISTORICAL_STORMS + RETURN_PERIOD_STORMS
-
-
-def ensure_baseline_single_iteration() -> pd.DataFrame:
-    """Iteration 0 of the unmodified-topology baseline. Reuses
-    VA_GND_GIC_DIR/ground_gic0.csv if the full baseline Monte Carlo has
-    already produced it (iteration 0 of a completed run is identical to
-    iteration 0 of a fresh single-iteration run -- same seed_base+0 draw --
-    so there's no reason to recompute it); otherwise runs just that one
-    iteration."""
-    path = VA_GND_GIC_DIR / "ground_gic0.csv"
-    if not path.exists():
-        logger.info(f"{path} not found -- running a single baseline iteration.")
-        run_gic_main(start_idx=0, end_idx=1, gic_dir=VA_GIC_DIR, gnd_gic_dir=VA_GND_GIC_DIR)
-    else:
-        logger.info(f"Reusing existing baseline iteration 0: {path}")
-    df = pd.read_csv(path)
-    df["Substation"] = df["Substation"].astype(str)
-    return df
-
-
-def run_candidate_single_iteration(island_id: str) -> pd.DataFrame:
-    """One real admittance/GIC solve (iteration 0 only) with this
-    candidate's boundary cut -- same seed_base+0 draw as the baseline, so
-    any difference between the two is attributable to the topology change,
-    not random noise."""
-    island = load_island(island_id)
-    boundary_line_ids = {str(x) for x in island["boundary_line_ids"]}
-    dirs = get_directional_check_dirs(island_id)
-    logger.info(
-        f"Island {island_id}: running single-iteration real solve with "
-        f"{len(boundary_line_ids)} boundary lines cut..."
-    )
-    run_gic_main(
-        start_idx=0, end_idx=1, exclude_line_ids=boundary_line_ids,
-        gic_dir=dirs["gic_dir"], gnd_gic_dir=dirs["gnd_gic_dir"],
-    )
-    df = pd.read_csv(dirs["gnd_gic_dir"] / "ground_gic0.csv")
-    df["Substation"] = df["Substation"].astype(str)
-    return df
-
-
-def compare_real_storms(
-    baseline_df: pd.DataFrame, candidate_df: pd.DataFrame, members: set, risk_weights: dict,
-) -> dict:
-    """For every available storm period, compute the same two quantities
-    evaluate_cut() computes with the cheap proxy -- own_effect (change in
-    |GIC| summed over the island's own members, risk-weighted) and
-    redistribution_cost_real (the same, summed over the REST of the
-    network) -- but from an actual admittance/GIC solve forced by that
-    storm's real E-field, not from current-flow betweenness. Absolute
-    value is used (not signed GIC) because it's |GIC| that damages
-    transformers in the fragility model this project's $/day figures come
-    from -- a redistribution that flips a line's current direction without
-    changing its magnitude is not a benefit."""
-    merged = baseline_df.merge(candidate_df, on="Substation", how="inner", suffixes=("_before", "_after"))
-    dropped = (len(baseline_df) - len(merged), len(candidate_df) - len(merged))
-    if dropped != (0, 0):
-        logger.warning(
-            f"Inner join on Substation dropped {dropped[0]} baseline / {dropped[1]} candidate rows "
-            "(likely nodes isolated by the boundary cut, or by keep_nodes_with_ground's non-zero-row "
-            "filtering) -- excluded from both own_effect and redistribution_cost_real below."
-        )
-
-    is_member = merged["Substation"].isin(members)
-    rest = merged.loc[~is_member]
-    own = merged.loc[is_member]
-
-    per_storm = {}
-    for period in ALL_STORM_PERIODS:
-        col = f"GIC_{period}"
-        before_col, after_col = f"{col}_before", f"{col}_after"
-        if before_col not in merged.columns or after_col not in merged.columns:
-            logger.warning(f"Missing {col} in single-iteration output -- skipping period {period}.")
-            continue
-
-        own_delta = (own[after_col].abs() - own[before_col].abs())
-        rest_delta = (rest[after_col].abs() - rest[before_col].abs())
-        own_effect = float((own_delta * own["Substation"].map(risk_weights).fillna(0.0)).sum())
-        redistribution_cost_real = float((rest_delta * rest["Substation"].map(risk_weights).fillna(0.0)).sum())
-
-        per_storm[period] = {
-            "own_effect": own_effect,
-            "redistribution_cost_real": redistribution_cost_real,
-            "is_real_historical": period in REAL_HISTORICAL_STORMS,
-        }
-
+def evaluate_directional_consistency(per_storm: dict) -> dict:
+    """True if redistribution_cost_real's sign agrees across all three
+    real, independently-directional storms -- False if it flips between
+    them (Island G's Gannon-vs-100yr flip, now checked against genuinely
+    independent directions instead of one real + one Gannon-signed
+    synthetic). None if fewer than one real-storm column was present."""
     real_signs = {
         p: (per_storm[p]["redistribution_cost_real"] > 0)
         for p in REAL_HISTORICAL_STORMS if p in per_storm
     }
     directionally_consistent = len(set(real_signs.values())) <= 1 if real_signs else None
-
-    return {
-        "per_storm": per_storm,
-        "directionally_consistent_across_real_storms": directionally_consistent,
-        "real_storm_signs": real_signs,
-    }
+    return {"directionally_consistent_across_real_storms": directionally_consistent, "real_storm_signs": real_signs}
 
 
 def main(island_ids: list):
     risk_weights = load_risk_weights()
-    baseline_df = ensure_baseline_single_iteration()
+    ctx = load_gic_context()
+    baseline_df = ensure_baseline_single_iteration(ctx)
 
     results = {}
     for island_id in island_ids:
         island = load_island(island_id)
         members = set(str(m) for m in island["members"])
-        candidate_df = run_candidate_single_iteration(island_id)
-        results[island_id] = compare_real_storms(baseline_df, candidate_df, members, risk_weights)
+        boundary_line_ids = {str(x) for x in island["boundary_line_ids"]}
+        dirs = get_directional_check_dirs(island_id)
+        logger.info(
+            f"Island {island_id}: running single-iteration real solve with "
+            f"{len(boundary_line_ids)} boundary lines cut..."
+        )
+        candidate_df = solve_single_iteration(ctx, boundary_line_ids, dirs["gic_dir"], dirs["gnd_gic_dir"])
+        per_storm = real_storm_redistribution(baseline_df, candidate_df, members, risk_weights, storms=ALL_STORM_PERIODS)
+        results[island_id] = {"per_storm": per_storm, **evaluate_directional_consistency(per_storm)}
 
     out_path = VA_NETWORK_DIR / f"va_directional_check_{'_'.join(island_ids)}.json"
     with open(out_path, "w") as f:
@@ -238,7 +168,7 @@ def main(island_ids: list):
             if period not in r["per_storm"]:
                 continue
             s = r["per_storm"][period]
-            tag = "REAL" if s["is_real_historical"] else "return-period"
+            tag = "REAL" if period in REAL_HISTORICAL_STORMS else "return-period"
             logger.info(
                 f"  {period:>12} ({tag:>13}): own_effect={s['own_effect']:+.4f}  "
                 f"redistribution_cost_real={s['redistribution_cost_real']:+.4f}"
