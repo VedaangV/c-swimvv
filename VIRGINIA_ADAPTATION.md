@@ -663,10 +663,43 @@ run now takes meaningfully longer. `SWITCHING_COST_WEIGHT`/
 the new redistribution_cost lives in raw risk-weighted `|GIC|` amps, a
 completely different scale than the old normalized betweenness units.
 
-**Status: implemented, not yet run against real data** (no real Virginia
-data available in the environment this was implemented in). See
-`ISLANDING_MITIGATION_PLAN.md`'s Phase 6d for the full implementation
-log.
+**Run against real data: Island H, 10/10 scenarios net-positive, including
+the real Gannon storm.** Seed `107946151`, grown to 3 members
+(`107946150`, `108016246`), 4 boundary lines, weights unchanged
+(`SWITCHING_COST_WEIGHT=0.015`, `REDISTRIBUTION_COST_WEIGHT=1.0` — no
+recalibration needed this time: `benefit` (~1.26) and the redistribution
+term's contribution (~0.83) came out comparable orders of magnitude on
+real data, unlike the two prior scale-mismatch bugs). All three real
+storms showed the same favorable sign pattern
+(`redistribution_cost_real` negative for gannon/halloween/st_patricks:
+-3.50/-2.98/-0.83; `own_effect` small and positive: +0.92/+0.21/+0.21) —
+`directionally_consistent_across_real_storms = True`, and unlike Island
+G, the small cost to H's own members is dominated by the larger benefit
+to the rest of the network under every real storm, not the reverse.
+
+Pushed through Phase 4/5: **`net_musd` (mid_365d) = +18.49 for
+gannon-year** (benefit-cost ratio ~118) — the first candidate to clear
+the one real storm in the standard scenario set. All nine return-period
+scenarios are also positive, scaling monotonically with severity (50yr:
++$58.4M, ratio 370 -> 250yr: +$455.8M, ratio 2,884), the same physically
+sensible shape Island F showed. This is a real, direct validation of the
+cheap real-storm check's predictive value: the raw-GIC comparison above
+predicted a net-positive Gannon result *before* the expensive Monte Carlo
+ran, on the strength of H's own-cost/network-benefit ratio being the
+opposite of G's -- and the full pipeline confirmed it.
+
+**What's still open**: real dollar figures exist for only one of the
+three real storms (Gannon). Halloween and St. Patrick's Day show the same
+favorable *raw-GIC* pattern in the directional check, but `|GIC|`-level
+agreement is not the same claim as a positive $/day result -- the
+fragility curve is nonlinear and the own/rest split doesn't map
+one-to-one onto the whole-Virginia econ diff the way Gannon's did.
+Wiring Halloween/St. Patrick's Day into `run_virginia_fragility.py`/
+`econ_analysis.py` (flagged as future work since Phase 6c) is now the
+single most valuable remaining step -- it would turn "1/3 real storms
+confirmed, 2/3 suggestive" into a fully closed 3/3 real-storm economic
+result for what is otherwise the strongest candidate this project has
+produced.
 
 ### 5.8 Status and honest framing for the paper
 
