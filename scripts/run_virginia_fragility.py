@@ -57,6 +57,32 @@ VA_ECON_DIR) reproduce the exact original baseline behavior -- econ_dir
 drives both pgf.DATA_LOC (checkpoints + final output) and the exposure
 gpkg lookup, so pointing it at VA_ISLAND_A_ECON_DIR isolates both without
 needing separate output filenames.
+
+PHASE 6c/6d EXTENSION: SCENARIOS is also monkeypatched, adding Halloween
+and St. Patrick's Day to the ten scenarios (nine return periods + Gannon)
+this pipeline processed previously. Nothing else needed changing --
+econ/preprocess/p_gic_files.py's process_gic_file() already has a rename
+map for GIC_halloween/GIC_st_patricks (it was only ever the SCENARIOS
+list gating which columns got processed), and every downstream script
+(econ_analysis.py, compare_island_econ.py, compute_island_benefit_cost.py)
+discovers scenarios dynamically from the data rather than a hardcoded
+list. This closes the gap flagged since Phase 6c: Halloween and St.
+Patrick's Day had real GIC data (scripts/run_virginia_gic.py always
+computed GIC_halloween/GIC_st_patricks columns) but no real $/day figures,
+because the fragility stage silently dropped those two columns.
+
+IMPORTANT -- CANNOT BE RESUMED FROM EXISTING CHECKPOINTS. process_all_
+files() resumes purely by counting existing batch files
+(`gic_processing_batches/summary_batch_*.nc` under econ_dir) and picking
+up from there -- it has no way to know those existing batches were
+computed against the OLD ten-scenario SCENARIOS list. Resuming after this
+change would silently combine early batches missing Halloween/St.
+Patrick's with later batches that have them, corrupting
+va_scenario_summary_gnd_gic.nc. Any econ_dir whose fragility Monte Carlo
+already completed under the old SCENARIOS list (the baseline VA_ECON_DIR,
+and any island's econ_dir that already has real results -- e.g. Island
+H's) needs its `gic_processing_batches`/`gnd_gic_processing_batches`
+directory cleared before rerunning this script, not resumed.
 """
 
 import argparse
@@ -68,6 +94,13 @@ from configs import setup_logger
 from configs.virginia_config import VA_ECON_DIR, VA_GND_GIC_DIR, VA_DATA_DIR
 
 logger = setup_logger(log_file="logs/run_virginia_fragility.log")
+
+# Adds Halloween/St. Patrick's Day to the ten scenarios (nine return
+# periods + Gannon) already in econ/preprocess/p_gic_files.py's
+# REGULAR_SCENARIOS (via configs.settings.get_scenarios()) -- see PHASE
+# 6c/6d EXTENSION above. Column names must exactly match process_gic_
+# file()'s gic_rename_map values.
+EXTRA_SCENARIOS = ["e_halloween-year-hazard A/ph", "e_st_patricks-year-hazard A/ph"]
 
 
 def main(limit: int | None = None, gnd_gic_dir=VA_GND_GIC_DIR, econ_dir=VA_ECON_DIR):
@@ -105,6 +138,19 @@ def main(limit: int | None = None, gnd_gic_dir=VA_GND_GIC_DIR, econ_dir=VA_ECON_
         "regular_all": "va_scenario_summary_gnd_gic.nc",
         "vulnerable_regular": "va_vulnerable_substations_gnd_gic",
     }
+    pgf.SCENARIOS = pgf.SCENARIOS + [s for s in EXTRA_SCENARIOS if s not in pgf.SCENARIOS]
+
+    batch_dir = econ_dir / (
+        "gnd_gic_processing_batches" if pgf.PROCESS_GND_FILES else "gic_processing_batches"
+    )
+    if batch_dir.exists() and any(batch_dir.iterdir()):
+        raise RuntimeError(
+            f"{batch_dir} has existing checkpoint batches from a previous run -- resuming would "
+            "silently mix batches computed under the old SCENARIOS list (missing Halloween/St. "
+            "Patrick's) with new ones that have them, corrupting the output. Clear this directory "
+            "(and re-run scripts/run_virginia_econ_analysis.py / run_virginia_islanded_econ_analysis.py "
+            "afterward) before running this script again. See module docstring's PHASE 6c/6d EXTENSION."
+        )
 
     pgf.process_all_files(gic_files, aggregate_gdf, workers=1)
 
