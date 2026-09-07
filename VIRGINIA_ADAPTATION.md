@@ -732,6 +732,22 @@ would have been: it demonstrates the validation methodology (Sections
 5.5-5.7) is doing real work, not rubber-stamping whatever the search
 produces.
 
+**Confirmed the limitation is the scoring function, not search breadth.**
+A much larger search (10 seed candidates, max size 15, still no
+`--exclude`) reproduced Island H exactly -- same seed, same 3 members,
+same net_score. A wider search finding the identical answer rules out
+"the budget was too small"; the ceiling is `redistribution_cost`'s
+definition. **Phase 6e (`ISLANDING_MITIGATION_PLAN.md`) implements the
+fix**: `redistribution_cost` is now scored via a fragility-weighted
+expected-GDP-affected delta -- reusing `econ/preprocess/p_gic_files.py`'s
+own fragility function directly at a small draw count, not raw `|GIC|`
+magnitude -- since raw-`|GIC|` sign agreement (which Halloween had) is
+demonstrably not sufficient evidence of $/day-level agreement (which
+Halloween didn't have). Implemented, not yet run against real data; the
+scoring weights need a fourth real-data calibration pass once it is,
+since the new `redistribution_cost` lives in a different (likely much
+smaller) unit scale than the raw-`|GIC|` version.
+
 ### 5.8 Status and honest framing for the paper
 
 As of this writing: **the SCI-driven method is a completed, negative

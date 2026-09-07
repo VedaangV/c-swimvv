@@ -32,17 +32,37 @@ one location can exacerbate GIC levels at others across the power grid").
    (scripts/validate_island_directionality.py, Phase 6c) found Island
    G's own members' GIC flips sign between the real Gannon forcing and
    the (non-independently-directional) 100-year return-period scenario.
-2. Current fix: `evaluate_cut()` now scores every candidate by an actual
-   single-iteration real admittance/GIC solve (scripts/real_storm_gic.py,
-   reusing the exact machinery Phase 6c already proved out) against the
-   three genuinely independent real historical storms this pipeline has
-   data for -- gannon, halloween, st_patricks -- and takes the WORST
-   case across them, not the average. A candidate only scores well if it
-   doesn't hurt badly under ANY of the three real directions. This
-   directly targets what was asked of this method: "a method that is
-   positive for all cases," not just on average across scenarios that
-   mostly share one storm's directional signature (see
-   VIRGINIA_ADAPTATION.md Section 5.5-5.6 for the full diagnosis).
+2. Second fix (retired this revision too): `evaluate_cut()` scored every
+   candidate by an actual single-iteration real admittance/GIC solve
+   (scripts/real_storm_gic.py, reusing the exact machinery Phase 6c
+   already proved out) against the three genuinely independent real
+   historical storms this pipeline has data for -- gannon, halloween,
+   st_patricks -- taking the WORST case across them, not the average.
+   This is what selected Island H/I. Real result once pushed through the
+   full econ pipeline with Halloween/St. Patrick's finally wired in
+   (Phase 6d's SCENARIOS fix): 10/12 scenarios net-positive, but only
+   1/3 real storms (Gannon) -- Halloween came back net-NEGATIVE despite
+   agreeing in sign with Gannon and St. Patrick's at the raw-|GIC| level.
+   Widening the search (more seed candidates, larger max_size) reproduced
+   the exact same candidate, ruling out "search wasn't broad enough" --
+   the ceiling was the scoring function itself.
+3. Current fix: raw |GIC| magnitude is not the quantity that actually
+   determines $/day economic impact -- the fragility model
+   (econ/preprocess/p_gic_files.py's lognormal Pf = Phi((ln Cpen +
+   ln|GIC| - ln theta)/beta) curve) is nonlinear and threshold-sensitive,
+   so two substations with the same |GIC| CHANGE can have very different
+   effects on failure probability depending on where they sit relative
+   to theta, and the whole-Virginia econ diff depends on which SPECIFIC
+   substations see that change, weighted by THEIR GDP exposure -- not on
+   an aggregated network-wide |GIC| sum. `evaluate_cut()` now scores
+   redistribution_cost via scripts.real_storm_gic.fragility_weighted_
+   redistribution(), which reuses econ/preprocess/p_gic_files.py's OWN
+   fragility function directly (not a reimplementation) at a small draw
+   count (CHEAP_FRAGILITY_DRAWS=300 vs. the real pipeline's 20,000+), to
+   get each substation's expected-GDP-affected before/after the cut. This
+   closes the specific gap Island H/I's Halloween result demonstrated:
+   raw-|GIC| sign agreement is not sufficient evidence of $/day-level
+   agreement.
 
 SCORING
 -------
@@ -56,31 +76,37 @@ island plus one growth candidate):
    same seed_base+0 Monte Carlo draw for both, so any difference is
    attributable to the topology change, not random noise.
 3. redistribution_cost = MAX over gannon/halloween/st_patricks of the
-   risk-weighted change in |GIC| summed over every substation NOT in
-   `members` (scripts.real_storm_gic.worst_case_redistribution_cost).
-   |GIC|, not signed GIC, because magnitude is what drives transformer
-   fragility in this project's econ model, not direction. Positive means
-   the cut made the rest of the network's risk-weighted current
-   magnitude worse, under the worst of the three real directions;
-   negative means every one of the three real storms improved it.
+   fragility-weighted expected-GDP-affected CHANGE summed over every
+   substation NOT in `members`
+   (scripts.real_storm_gic.fragility_weighted_redistribution +
+   worst_case_redistribution_cost). Positive means the cut made the rest
+   of Virginia's expected fragility-priced exposure worse, under the
+   worst of the three real directions; negative means every one of the
+   three real storms improved it. Restricted to substations with real
+   economic exposure data (Virginia only, ~413 substations) -- a closer
+   match to the actual whole-Virginia econ objective than the prior
+   PJM-wide raw-|GIC| version.
 4. benefit = sum of risk_weight over `members` -- these substations'
    own GIC-risk/economic-exposure no longer needs to route through the
-   part of the grid being protected.
+   part of the grid being protected. Still the static risk_weight (GIC
+   risk + economic exposure density), NOT fragility-weighted -- only
+   redistribution_cost changed; benefit is cheap to keep as a simple
+   proxy since it's summed over a handful of members, not the whole rest
+   of the network.
 5. switching_cost = voltage-weighted boundary cost (unchanged --
    see scripts/island_graph_utils.py's edge_cost()).
 
    SWITCHING_COST_WEIGHT (0.015) and REDISTRIBUTION_COST_WEIGHT (1.0)
-   were calibrated for the OLD current_flow_betweenness-scale
-   redistribution_cost (~0.001-0.009 typical magnitude). real_storm_gic's
-   redistribution_cost lives in raw risk-weighted |GIC| amps instead --
-   a completely different scale (Phase 6c's real Island G check showed
-   per-storm magnitudes in the 1-30 range). Both weights need a THIRD
-   real-data calibration pass, same pattern as the two calibration fixes
-   already made to this file (SUM-vs-MEAN, then the 0.1-vs-0.015
-   switching-cost-weight fix) -- expect this, don't be alarmed by it: it
-   is not a modeling error, it is the same "check real output magnitudes,
-   recalibrate" step this file has needed every time its scoring
-   function's underlying units changed.
+   were calibrated for the raw-|GIC| version's scale (per-storm
+   magnitudes in the 1-30 range). Fragility-weighted redistribution_cost
+   lives in expected-GDP-affected units instead -- a probability
+   (typically << 1) times a GDP exposure value, likely a very different
+   (probably much smaller) magnitude. This is a FOURTH real-data
+   calibration pass in this file's history (after SUM-vs-MEAN, the
+   0.1-vs-0.015 switching-cost-weight fix, and the raw-|GIC| rescaling
+   itself) -- expect it, don't treat it as a sign of an error: it is the
+   same "check real output magnitudes, recalibrate" step this file has
+   needed every time its scoring function's underlying units changed.
 6. net_score = benefit - redistribution_cost_weight * redistribution_cost
    - switching_cost_weight * switching_cost. Greedily maximized, same
    stopping rule as before (stop the moment no candidate improves it).
@@ -137,8 +163,8 @@ data, the next honest step is the bigger optimization rung, not another
 heuristic tweak.
 
 Usage:
-    python scripts/select_island_by_redistribution_sensitivity.py --island h
-    python scripts/select_island_by_redistribution_sensitivity.py --island h --exclude a b c d e f g
+    python scripts/select_island_by_redistribution_sensitivity.py --island j
+    python scripts/select_island_by_redistribution_sensitivity.py --island j --exclude a b c d e f g
 """
 
 import argparse
@@ -160,7 +186,8 @@ from scripts.island_graph_utils import (
 from scripts.real_storm_gic import (
     solve_single_iteration,
     ensure_baseline_single_iteration,
-    real_storm_redistribution,
+    load_fragility_exposure,
+    fragility_weighted_redistribution,
     worst_case_redistribution_cost,
 )
 from scripts.run_virginia_gic import load_gic_context
@@ -229,13 +256,15 @@ def evaluate_cut(
     risk_weights: dict,
     gic_ctx: dict,
     baseline_gnd_df: pd.DataFrame,
+    exposure: pd.DataFrame,
     switching_cost_weight: float = SWITCHING_COST_WEIGHT,
     redistribution_cost_weight: float = REDISTRIBUTION_COST_WEIGHT,
 ) -> dict:
     """Score cutting `members`'s induced boundary -- see module
     docstring's SCORING. Requires one real single-iteration admittance/
     GIC solve (the expensive part -- see scripts/real_storm_gic.py's
-    module docstring for the cost tradeoff this implies)."""
+    module docstring for the cost tradeoff this implies) plus two cheap
+    fragility-model calls per real storm (before/after)."""
     boundary = boundary_edges(G, members)
     boundary_line_ids = set()
     for u, v in boundary:
@@ -243,7 +272,7 @@ def evaluate_cut(
 
     scratch_dirs = get_search_scratch_dirs()
     candidate_df = solve_single_iteration(gic_ctx, boundary_line_ids, scratch_dirs["gic_dir"], scratch_dirs["gnd_gic_dir"])
-    per_storm = real_storm_redistribution(baseline_gnd_df, candidate_df, members, risk_weights)
+    per_storm = fragility_weighted_redistribution(baseline_gnd_df, candidate_df, members, exposure)
     redistribution_cost = worst_case_redistribution_cost(per_storm)
 
     benefit = sum(risk_weights.get(n, 0.0) for n in members)
@@ -265,6 +294,7 @@ def select_island_by_sensitivity(
     risk_weights: dict,
     gic_ctx: dict,
     baseline_gnd_df: pd.DataFrame,
+    exposure: pd.DataFrame,
     excluded_nodes: set | None = None,
     max_size: int = MAX_ISLAND_SIZE,
     n_seed_candidates: int = N_SEED_CANDIDATES,
@@ -309,7 +339,7 @@ def select_island_by_sensitivity(
     best_seed, best_eval = None, None
     for s in seed_candidates:
         ev = evaluate_cut(
-            G, {s}, risk_weights, gic_ctx, baseline_gnd_df,
+            G, {s}, risk_weights, gic_ctx, baseline_gnd_df, exposure,
             switching_cost_weight=switching_cost_weight, redistribution_cost_weight=redistribution_cost_weight,
         )
         seed_candidate_trace.append({"candidate": s, **{k: v for k, v in ev.items() if k != "boundary"}})
@@ -352,7 +382,7 @@ def select_island_by_sensitivity(
         best_candidate, best_candidate_eval = None, None
         for c in candidates:
             trial_eval = evaluate_cut(
-                G, island | {c}, risk_weights, gic_ctx, baseline_gnd_df,
+                G, island | {c}, risk_weights, gic_ctx, baseline_gnd_df, exposure,
                 switching_cost_weight=switching_cost_weight, redistribution_cost_weight=redistribution_cost_weight,
             )
             if best_candidate_eval is None or trial_eval["net_score"] > best_candidate_eval["net_score"]:
@@ -415,7 +445,7 @@ def select_island_by_sensitivity(
 
 
 def main(
-    island_id: str = "h",
+    island_id: str = "j",
     exclude_island_ids: list | None = None,
     max_size: int = MAX_ISLAND_SIZE,
     n_seed_candidates: int = N_SEED_CANDIDATES,
@@ -432,6 +462,8 @@ def main(
     gic_ctx = load_gic_context()
     logger.info("Solving real single-iteration baseline (no cut)...")
     baseline_gnd_df = ensure_baseline_single_iteration(gic_ctx)
+    logger.info("Loading Virginia economic exposure data (for fragility-weighted scoring)...")
+    exposure = load_fragility_exposure()
 
     excluded_nodes = None
     if exclude_island_ids:
@@ -442,7 +474,7 @@ def main(
         )
 
     island = select_island_by_sensitivity(
-        G, risk_weights, gic_ctx, baseline_gnd_df, excluded_nodes=excluded_nodes, max_size=max_size,
+        G, risk_weights, gic_ctx, baseline_gnd_df, exposure, excluded_nodes=excluded_nodes, max_size=max_size,
         n_seed_candidates=n_seed_candidates, switching_cost_weight=switching_cost_weight,
         redistribution_cost_weight=redistribution_cost_weight, min_lines=min_lines,
     )
@@ -467,8 +499,9 @@ def main(
     )
     logger.info(f"Members: {island['members']}")
     logger.info(
-        "Per-storm redistribution_cost_real at final island (positive = worse): "
-        + ", ".join(f"{p}={v['redistribution_cost_real']:+.4f}" for p, v in island["per_storm"].items())
+        "Per-storm fragility-weighted redistribution_cost_real at final island "
+        "(expected GDP-affected units, positive = worse): "
+        + ", ".join(f"{p}={v['redistribution_cost_real']:+.6f}" for p, v in island["per_storm"].items())
     )
     logger.info("Growth trace:\n" + "\n".join(
         f"  step {t['step']}: added {t['added']} -- {t['reason']} "
@@ -485,7 +518,7 @@ if __name__ == "__main__":
                      "admittance/GIC solve per candidate), not a topology-only proxy. Phase 6d "
                      "replacement for this file's own earlier current_flow_betweenness-based scoring."
     )
-    parser.add_argument("--island", type=str, default="h", help="Island id to select and save, e.g. 'h'.")
+    parser.add_argument("--island", type=str, default="j", help="Island id to select and save, e.g. 'j'.")
     parser.add_argument(
         "--exclude", type=str, nargs="*", default=None,
         help="Prior island id(s) whose members + boundary neighbors are ineligible for this island.",

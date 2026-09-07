@@ -157,6 +157,118 @@ def real_storm_redistribution(
     return per_storm
 
 
+def load_fragility_exposure() -> pd.DataFrame:
+    """va_substation_exposure.gpkg (POP20 + the ten GDP_*/EST_* sector
+    columns per substation, built by run_virginia_areal_interpolation.py)
+    -- the same table run_virginia_fragility.py feeds into the real
+    fragility Monte Carlo. Loaded once per search run (like
+    run_virginia_gic.load_gic_context()), not per candidate.
+
+    Restricted to Virginia by construction (this exposure table only has
+    rows for Virginia's substations) -- fragility_weighted_redistribution
+    below therefore only scores substations with real economic exposure,
+    which is a closer match to the actual econ objective (whole-VIRGINIA
+    $/day) than real_storm_redistribution's PJM-wide raw-|GIC| sum was."""
+    import geopandas as gpd
+    from configs.virginia_config import VA_ECON_DIR
+
+    path = VA_ECON_DIR / "va_substation_exposure.gpkg"
+    if not path.exists():
+        raise FileNotFoundError(f"Missing {path}. Run scripts/run_virginia_areal_interpolation.py first.")
+    exposure = gpd.read_file(path)
+    exposure["sub_id"] = exposure["sub_id"].astype(str)
+    return exposure
+
+
+# Deliberately much smaller than the real fragility Monte Carlo's defaults
+# (DEFAULT_MAX_ITERATIONS=20000, DEFAULT_BATCH_SIZE=2000, with early-stop
+# convergence checking from draw 5000) -- this needs to run twice per real
+# storm per candidate (before/after), on top of the admittance solve
+# that's already the dominant cost, so it deliberately trades precision
+# for speed. Both equal to CHEAP_FRAGILITY_DRAWS so _simulate_scenario's
+# while loop runs exactly one batch and returns -- its convergence check
+# only triggers at i>=5000, never reached here, so `tol` is inert at this
+# draw count and any value works.
+CHEAP_FRAGILITY_DRAWS = 300
+
+
+def fragility_weighted_per_substation(gic_by_sub: pd.Series, exposure: pd.DataFrame) -> pd.DataFrame:
+    """Runs econ/preprocess/p_gic_files.py's OWN fragility function
+    (_simulate_scenario/one_draw_vec -- the exact lognormal Pf = Phi((ln
+    Cpen + ln|GIC| - ln theta)/beta) model the real econ pipeline uses,
+    reused directly rather than reimplemented, so this proxy can't drift
+    out of sync with the real model) at a small draw count, and returns
+    each substation's per-substation failure_prob times its total GDP
+    exposure (summed across all ten GDP_* sectors) -- an "expected $
+    GDP-affected" scalar per substation, cheap enough to call inside a
+    search loop.
+
+    gic_by_sub: Series of raw GIC values (any sign; magnitude is what
+    matters, same as the real model) indexed by sub_id."""
+    import econ.preprocess.p_gic_files as pgf
+    from configs import GDP_COLUMNS, get_simulation_config
+
+    merged = exposure.merge(
+        gic_by_sub.rename("_gic_val").reset_index().rename(columns={"index": "sub_id"}),
+        on="sub_id", how="inner",
+    )
+    merged["latitude"] = 0.0
+    merged["longitude"] = 0.0
+
+    config = get_simulation_config()
+    _, res, tbl = pgf._simulate_scenario(
+        "_gic_val", merged, theta0=config["theta0"], tol=config["tolerance"],
+        max_iter=CHEAP_FRAGILITY_DRAWS, batch=CHEAP_FRAGILITY_DRAWS,
+    )
+    if tbl is None:
+        return pd.DataFrame(columns=["sub_id", "expected_gdp_affected"])
+
+    gdp_total = merged.set_index("sub_id")[GDP_COLUMNS].sum(axis=1)
+    tbl = tbl.set_index("sub_id")
+    tbl["expected_gdp_affected"] = tbl["failure_prob"] * gdp_total.reindex(tbl.index)
+    return tbl[["expected_gdp_affected"]].reset_index()
+
+
+def fragility_weighted_redistribution(
+    baseline_df: pd.DataFrame, candidate_df: pd.DataFrame, members: set, exposure: pd.DataFrame,
+    storms: list = REAL_HISTORICAL_STORMS,
+) -> dict:
+    """Fragility-weighted analog of real_storm_redistribution() above --
+    same own_effect/redistribution_cost_real shape, but instead of a raw
+    risk-weighted |GIC| delta, each substation's contribution is its
+    fragility-model expected-GDP-affected delta (fragility_weighted_per_
+    substation, before vs. after the cut). This closes the proxy-
+    objective gap real_storm_redistribution has: raw |GIC| agreement
+    doesn't guarantee agreement in the actual fragility-priced $/day
+    outcome (Island H's Halloween result -- favorable raw-|GIC| sign,
+    negative real $/day -- is the demonstrated case motivating this).
+
+    Two fragility-model calls per storm (before, after) rather than one
+    real_storm_redistribution-style comparison -- each cheap
+    (CHEAP_FRAGILITY_DRAWS draws) relative to the admittance solve that
+    produced baseline_df/candidate_df in the first place."""
+    per_storm = {}
+    for period in storms:
+        before_col, after_col = f"GIC_{period}", f"GIC_{period}"
+        if before_col not in baseline_df.columns or after_col not in candidate_df.columns:
+            continue
+
+        before_gic = baseline_df.set_index("Substation")[before_col]
+        after_gic = candidate_df.set_index("Substation")[after_col]
+
+        before_tbl = fragility_weighted_per_substation(before_gic, exposure)
+        after_tbl = fragility_weighted_per_substation(after_gic, exposure)
+        merged = before_tbl.merge(after_tbl, on="sub_id", how="outer", suffixes=("_before", "_after")).fillna(0.0)
+
+        is_member = merged["sub_id"].isin(members)
+        delta = merged["expected_gdp_affected_after"] - merged["expected_gdp_affected_before"]
+        per_storm[period] = {
+            "own_effect": float(delta[is_member].sum()),
+            "redistribution_cost_real": float(delta[~is_member].sum()),
+        }
+    return per_storm
+
+
 def worst_case_redistribution_cost(per_storm: dict) -> float:
     """max over the real storms' redistribution_cost_real -- see module
     docstring's WORST-CASE, NOT AVERAGE. 0.0 if per_storm is empty (no
