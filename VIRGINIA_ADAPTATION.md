@@ -688,18 +688,49 @@ predicted a net-positive Gannon result *before* the expensive Monte Carlo
 ran, on the strength of H's own-cost/network-benefit ratio being the
 opposite of G's -- and the full pipeline confirmed it.
 
-**What's still open**: real dollar figures exist for only one of the
-three real storms (Gannon). Halloween and St. Patrick's Day show the same
-favorable *raw-GIC* pattern in the directional check, but `|GIC|`-level
-agreement is not the same claim as a positive $/day result -- the
-fragility curve is nonlinear and the own/rest split doesn't map
-one-to-one onto the whole-Virginia econ diff the way Gannon's did.
-Wiring Halloween/St. Patrick's Day into `run_virginia_fragility.py`/
-`econ_analysis.py` (flagged as future work since Phase 6c) is now the
-single most valuable remaining step -- it would turn "1/3 real storms
-confirmed, 2/3 suggestive" into a fully closed 3/3 real-storm economic
-result for what is otherwise the strongest candidate this project has
-produced.
+**Resolved, and the result is more nuanced than hoped: real dollar
+figures now exist for all three real storms, and only one is positive.**
+Halloween and St. Patrick's Day were wired into `run_virginia_fragility.
+py`/`econ_analysis.py` (Phase 6d's `SCENARIOS` monkeypatch). Real result:
+`gannon-year` +$18.49M (positive, as before), `halloween-year` **−$4.51M
+(negative)**, `st_patricks-year` **$0.00M** (exactly zero benefit, so
+net −$0.16M once switching/own-outage cost is included). Whole-scenario-set
+tally: **10/12 net-positive** (all nine return periods plus Gannon), the
+best result of any candidate, but the real-storm tally specifically is
+**1 of 3 positive**, not 3 of 3.
+
+This is a sharper finding than "not yet validated" — it's a concrete
+demonstration that the raw-GIC directional check (Section 5.6) is not
+sufficient on its own. That check found all three real storms favorable
+at the `|GIC|`-magnitude level (`redistribution_cost_real` negative for
+all three) and reported `directionally_consistent_across_real_storms =
+True` — yet Halloween's real $/day sign came out negative anyway. The
+gap: the fragility curve is nonlinear and the whole-Virginia econ diff
+depends on *which specific substations* see the GIC change and their
+population/GDP exposure, not just an aggregated network-wide `|GIC|`
+sum. Sign agreement in the cheap check is evidence worth having (it
+correctly predicted Gannon's sign) but is not proof of $/day-level
+agreement — a real, demonstrated limitation, not just a theoretical
+caveat, and a stronger basis for Section 4.7/5.6's argument than the
+prediction alone would have been.
+
+St. Patrick's Day's exact $0.00M is plausibly a genuine floor effect
+(a materially weaker storm than Gannon, plausibly not crossing the
+fragility failure threshold for any Virginia substation in either
+topology) rather than a data artifact, but worth a direct check of
+`va_ghosh_results.csv`'s raw `total_impact` for that scenario in both
+the baseline and Island H directories before treating it as settled.
+
+**Honest headline for the paper**: Island H is real-storm-positive for
+the most severe historical event in this dataset (Gannon) and the full
+return-period family, negative for one weaker real storm (Halloween),
+and neutral for another (St. Patrick's). No candidate produced by this
+project has achieved unanimous real-storm positivity. Reporting that
+precisely -- not just the 10/12 headline -- is the more defensible
+claim, and arguably a better result for the paper than a clean 3/3
+would have been: it demonstrates the validation methodology (Sections
+5.5-5.7) is doing real work, not rubber-stamping whatever the search
+produces.
 
 ### 5.8 Status and honest framing for the paper
 
