@@ -204,14 +204,15 @@ def fragility_weighted_per_substation(gic_by_sub: pd.Series, exposure: pd.DataFr
     search loop.
 
     gic_by_sub: Series of raw GIC values (any sign; magnitude is what
-    matters, same as the real model) indexed by sub_id."""
+    matters, same as the real model) indexed by sub_id -- whatever the
+    index is actually named (e.g. "Substation" after a set_index() on the
+    ground-GIC dataframe), not necessarily "sub_id" itself."""
     import econ.preprocess.p_gic_files as pgf
     from configs import GDP_COLUMNS, get_simulation_config
 
-    merged = exposure.merge(
-        gic_by_sub.rename("_gic_val").reset_index().rename(columns={"index": "sub_id"}),
-        on="sub_id", how="inner",
-    )
+    gic_frame = gic_by_sub.rename("_gic_val").reset_index()
+    gic_frame.columns = ["sub_id", "_gic_val"]
+    merged = exposure.merge(gic_frame, on="sub_id", how="inner")
     merged["latitude"] = 0.0
     merged["longitude"] = 0.0
 
