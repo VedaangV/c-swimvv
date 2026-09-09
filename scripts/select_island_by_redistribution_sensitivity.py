@@ -145,15 +145,59 @@ a true leaf. min_lines >= 2 forces seed selection toward substations
 that could plausibly anchor a multi-substation region, without touching
 growth itself.
 
+PHASE 6g: BOUNDED LOOKAHEAD -- ONE-STEP GREEDY CAN'T SEE NON-MONOTONIC PATHS
+-----------------------------------------------------------------------------
+Real-data motivation: once Phase 6f's precision-bug fix was applied, Island
+G -- built under the now-fully-deprecated generation-anchored/current-flow-
+betweenness method, no longer reachable by THIS file's own search -- came
+back with a whole-Virginia net_musd sum an order of magnitude larger than
+Island H or J, this file's own real-storm/fragility-weighted selections.
+That is a real instance of the failure mode this section fixes: the old
+stopping rule (`if best_candidate_eval["net_score"] <= current_eval["net_
+score"]: stop`) only ever looks one step ahead. It cannot tell the
+difference between "this branch is a dead end" and "this branch is
+temporarily worse but leads somewhere better" -- e.g. members {1} scoring
+higher than {1,2}, but {1,2,3} scoring higher than either. Since growth
+only ever adds one member and never removes one, the old rule would stop
+permanently at {1} and never discover {1,2,3}.
+
+Fix: `_try_bounded_lookahead()`. When the single best growth candidate at
+a step would make net_score worse (the old stopping condition), the search
+no longer gives up immediately -- it tentatively commits to that candidate
+anyway and keeps greedily growing (still picking the single best candidate
+at each step, not branching) for up to `lookahead_steps` MORE steps
+(`--lookahead-steps`, default LOOKAHEAD_STEPS below), watching whether
+net_score ever climbs back past the score it had BEFORE the tentative step
+(not just past the immediately-rejected candidate's score). The moment it
+does, the whole tentative path up to that recovery point is committed for
+real and normal growth resumes from there. If the lookahead budget runs out
+without recovering, the entire tentative extension is discarded and the
+search stops exactly where the old rule would have -- so this is a strict
+relaxation, never worse than the old behavior, only sometimes better.
+
+Cost: each lookahead attempt is up to `lookahead_steps` more real
+admittance/GIC solves per boundary candidate at each extra step, but this
+path only triggers at points where growth would otherwise have stopped
+(typically once or twice per search), not at every step.
+
+Still not exhaustive: only the single greedy-best candidate is explored at
+each lookahead step, not every branch (a full branch-and-bound would cost
+combinatorially more real solves per rejected step). This catches the
+reported (1,2,3) > (1) > (1,2) failure mode but not every possible
+non-monotonic path a true joint optimization would find -- see the
+LIMITATIONS section below, which this doesn't retire, only narrows.
+
 LIMITATIONS -- HONEST, NOT HIDDEN
 ------------------------------------
 Still a GREEDY search over a SEEDED REGION shape, not the full
 optimization-over-the-GIC-circuit the literature's exact methods use
 (arXiv:1701.01469's MIQCP, or a DRO formulation over storm-severity
 uncertainty like arXiv:2104.00204). Scoring against real storms fixes
-the direction-blindness diagnosed in Phase 6c, but the search itself is
-still greedy region-growing, not a joint optimization over which
-candidates to consider. Worst-case-over-three-storms is also not the
+the direction-blindness diagnosed in Phase 6c, and bounded lookahead
+(Phase 6g) fixes the one-step-stopping blind spot, but the search itself
+is still greedy region-growing (single seed, single best candidate per
+step/lookahead-step), not a joint optimization over which candidates to
+consider. Worst-case-over-three-storms is also not the
 same as worst-case-over-all-possible-directions -- gannon/halloween/
 st_patricks are the only three real, independently-measured directional
 forcings this project has data for, not an exhaustive sample of every
@@ -205,6 +249,7 @@ MAX_ISLAND_SIZE = 15
 N_SEED_CANDIDATES = 10
 SWITCHING_COST_WEIGHT = 0.015
 REDISTRIBUTION_COST_WEIGHT = 1.0
+LOOKAHEAD_STEPS = 2
 
 
 def load_risk_weights() -> dict:
@@ -289,6 +334,67 @@ def evaluate_cut(
     }
 
 
+def _try_bounded_lookahead(
+    G: nx.Graph,
+    island: set,
+    current_eval: dict,
+    first_candidate,
+    first_eval: dict,
+    risk_weights: dict,
+    gic_ctx: dict,
+    baseline_gnd_df: pd.DataFrame,
+    exposure: pd.DataFrame,
+    eligible_nodes: set,
+    switching_cost_weight: float,
+    redistribution_cost_weight: float,
+    max_size: int,
+    lookahead_steps: int,
+) -> list | None:
+    """See module docstring's PHASE 6g. `first_candidate`/`first_eval` is
+    the single best growth candidate at this step, already known to score
+    WORSE than `current_eval` (the old stopping rule's trigger condition).
+    Tentatively commits to it anyway and keeps greedily growing (single
+    best candidate per step, not branching) for up to `lookahead_steps`
+    more steps, checking after every step -- including this first one --
+    whether net_score has climbed back past `current_eval`'s score (the
+    score BEFORE the tentative step, not just past first_eval).
+
+    Returns the list of (candidate, eval) pairs to commit, ending at the
+    first point recovery happened, or None if the lookahead budget ran
+    out without recovering -- in which case the caller discards the whole
+    tentative extension and stops exactly where the old one-step rule
+    would have."""
+    path = [(first_candidate, first_eval)]
+    trial_island = set(island) | {first_candidate}
+    if first_eval["net_score"] > current_eval["net_score"]:
+        return path
+
+    for _ in range(lookahead_steps):
+        if len(trial_island) >= max_size:
+            break
+        boundary = path[-1][1]["boundary"]
+        candidates = {v for (u, v) in boundary if u in trial_island} | {u for (u, v) in boundary if v in trial_island}
+        candidates = {c for c in candidates if c not in trial_island and c in eligible_nodes}
+        if not candidates:
+            break
+
+        best_c, best_c_eval = None, None
+        for c in candidates:
+            ev = evaluate_cut(
+                G, trial_island | {c}, risk_weights, gic_ctx, baseline_gnd_df, exposure,
+                switching_cost_weight=switching_cost_weight, redistribution_cost_weight=redistribution_cost_weight,
+            )
+            if best_c_eval is None or ev["net_score"] > best_c_eval["net_score"]:
+                best_c, best_c_eval = c, ev
+
+        trial_island.add(best_c)
+        path.append((best_c, best_c_eval))
+        if best_c_eval["net_score"] > current_eval["net_score"]:
+            return path
+
+    return None
+
+
 def select_island_by_sensitivity(
     G: nx.Graph,
     risk_weights: dict,
@@ -301,6 +407,7 @@ def select_island_by_sensitivity(
     switching_cost_weight: float = SWITCHING_COST_WEIGHT,
     redistribution_cost_weight: float = REDISTRIBUTION_COST_WEIGHT,
     min_lines: int = 1,
+    lookahead_steps: int = LOOKAHEAD_STEPS,
 ) -> dict:
     """Run the real-storm-scored greedy search once. Returns a dict with
     the same members/boundary_line_ids/seed/growth_trace shape scripts/
@@ -309,7 +416,9 @@ def select_island_by_sensitivity(
     breakdown at each step.
 
     min_lines restricts the SEED pool only -- see module docstring's
-    SEED CANDIDATE POOL."""
+    SEED CANDIDATE POOL. lookahead_steps controls the Phase 6g bounded
+    lookahead -- see module docstring's PHASE 6g section. 0 reproduces the
+    old strict one-step-stopping behavior exactly."""
     excluded_nodes = excluded_nodes or set()
     eligible_nodes = set(risk_weights) - excluded_nodes
     if not eligible_nodes:
@@ -389,19 +498,48 @@ def select_island_by_sensitivity(
                 best_candidate, best_candidate_eval = c, trial_eval
 
         if best_candidate_eval["net_score"] <= current_eval["net_score"]:
-            stop_reason = "no_improving_candidate"
-            rejected_candidate = {
-                "candidate": best_candidate,
-                **{k: v for k, v in best_candidate_eval.items() if k != "boundary"},
-            }
+            lookahead_path = None
+            if lookahead_steps > 0:
+                lookahead_path = _try_bounded_lookahead(
+                    G, island, current_eval, best_candidate, best_candidate_eval,
+                    risk_weights, gic_ctx, baseline_gnd_df, exposure, eligible_nodes,
+                    switching_cost_weight, redistribution_cost_weight, max_size, lookahead_steps,
+                )
+
+            if lookahead_path is None:
+                stop_reason = "no_improving_candidate"
+                rejected_candidate = {
+                    "candidate": best_candidate,
+                    **{k: v for k, v in best_candidate_eval.items() if k != "boundary"},
+                }
+                logger.info(
+                    f"Growth stopped at {len(island)} member(s): the best of {len(candidates)} evaluated "
+                    f"candidate(s), {best_candidate}, WAS considered and rejected -- its net_score "
+                    f"({best_candidate_eval['net_score']:.4f}) would be worse than the current island's "
+                    f"({current_eval['net_score']:.4f}), i.e. adding it makes things worse, not just "
+                    "'no better'."
+                    + (f" Bounded lookahead ({lookahead_steps} step(s)) did not recover a better state either."
+                       if lookahead_steps > 0 else "")
+                )
+                break
+
             logger.info(
-                f"Growth stopped at {len(island)} member(s): the best of {len(candidates)} evaluated "
-                f"candidate(s), {best_candidate}, WAS considered and rejected -- its net_score "
-                f"({best_candidate_eval['net_score']:.4f}) would be worse than the current island's "
-                f"({current_eval['net_score']:.4f}), i.e. adding it makes things worse, not just "
-                "'no better'."
+                f"Growth would have stopped at {len(island)} member(s) ({best_candidate}'s net_score "
+                f"{best_candidate_eval['net_score']:.4f} <= current {current_eval['net_score']:.4f}), but "
+                f"Phase 6g bounded lookahead recovered a better state {len(lookahead_path)} step(s) ahead: "
+                f"committing path {[c for c, _ in lookahead_path]} (final net_score "
+                f"{lookahead_path[-1][1]['net_score']:.4f} > {current_eval['net_score']:.4f})."
             )
-            break
+            for step_candidate, step_eval in lookahead_path:
+                island.add(step_candidate)
+                prev_score = current_eval["net_score"]
+                current_eval = step_eval
+                trace.append({
+                    "step": len(trace), "added": step_candidate,
+                    "reason": f"bounded-lookahead recovery step ({prev_score:.4f} -> {current_eval['net_score']:.4f})",
+                    "island_size": len(island), **{k: v for k, v in current_eval.items() if k != "boundary"},
+                })
+            continue
 
         island.add(best_candidate)
         prev_score = current_eval["net_score"]
@@ -452,6 +590,7 @@ def main(
     switching_cost_weight: float = SWITCHING_COST_WEIGHT,
     redistribution_cost_weight: float = REDISTRIBUTION_COST_WEIGHT,
     min_lines: int = 1,
+    lookahead_steps: int = LOOKAHEAD_STEPS,
 ):
     G = load_graph()
     attach_conductance(G)
@@ -477,6 +616,7 @@ def main(
         G, risk_weights, gic_ctx, baseline_gnd_df, exposure, excluded_nodes=excluded_nodes, max_size=max_size,
         n_seed_candidates=n_seed_candidates, switching_cost_weight=switching_cost_weight,
         redistribution_cost_weight=redistribution_cost_weight, min_lines=min_lines,
+        lookahead_steps=lookahead_steps,
     )
 
     out_path = VA_NETWORK_DIR / f"va_island_{island_id}.json"
@@ -545,9 +685,18 @@ if __name__ == "__main__":
              "degree-1 dead-end substations as seeds -- they tend to win on cost-effectiveness "
              "(minimal switching cost, ~zero redistribution risk) but can't grow past themselves.",
     )
+    parser.add_argument(
+        "--lookahead-steps", type=int, default=LOOKAHEAD_STEPS,
+        help="Phase 6g bounded lookahead: when the best growth candidate at a step would make "
+             "net_score worse, keep tentatively growing up to this many MORE steps before giving up, "
+             "committing the whole tentative path if net_score ever recovers past its pre-step value "
+             "(catches a temporarily-worse-but-eventually-better growth path the old strict one-step "
+             "stopping rule couldn't see). Set to 0 to reproduce the old strict behavior exactly.",
+    )
     args = parser.parse_args()
     main(
         island_id=args.island, exclude_island_ids=args.exclude, max_size=args.max_size,
         n_seed_candidates=args.n_seed_candidates, switching_cost_weight=args.switching_cost_weight,
         redistribution_cost_weight=args.redistribution_cost_weight, min_lines=args.min_lines,
+        lookahead_steps=args.lookahead_steps,
     )
