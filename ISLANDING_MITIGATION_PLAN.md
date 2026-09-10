@@ -575,7 +575,17 @@ Restricted to Virginia by construction (the exposure table only covers Virginia'
 
 **Not exhaustive.** Only the single greedy-best candidate is explored at each lookahead step, not every branch — a full branch-and-bound would cost combinatorially more real admittance/GIC solves per rejected step. This catches the reported `(1,2,3) > (1) > (1,2)` failure mode specifically, not every possible non-monotonic path a true joint optimization (the MIQCP/DRO methods already named in this file's LIMITATIONS section) would find.
 
-**Status: implemented, not yet run against real data.** Next step is rerunning the search (with `--exclude` no longer used, per the "best real candidate" framing already adopted for H/J) with lookahead enabled, to see whether it finds something better than J on its own — and, as a sanity check, whether it can be pointed at G's neighborhood at all given G used a different (deprecated) method and seed pool.
+**Status: run against real data — Island K.** `select_island_by_redistribution_sensitivity.py --island k` (default `--lookahead-steps 2`, no `--exclude`) used the lookahead twice: once at 4 members (dip to net_score 2.0494 at step 4, recovered to 2.5014 at step 5, both committed) and once at 9 members (dip to 3.5586 at step 9, recovered to 4.2551 at step 10). Growth continued to 12 members and a final net_score of 5.3762 — versus the 4-member/2.3618 island the old strict one-step rule would have stopped at. The final stop (12 members, best rejected candidate 4.3976 vs. current 5.3762) held even with lookahead, i.e. a real stop, not a premature one.
+
+Full pipeline result (`run_virginia_islanded_gic.py` → `run_virginia_islanded_fragility.py` → `run_virginia_islanded_econ_analysis.py` → `compare_island_econ.py` → `compute_island_benefit_cost.py`, all 12 scenarios including Halloween/St. Patrick's from the start): **11/12 scenarios net-positive** at mean confidence — only `st_patricks-year` misses, and barely (diff `-0.000217`, net `-0.46` musd). Per real-storm comparison against H and J:
+
+| Storm | H | J | K |
+|---|---|---|---|
+| gannon | +0.036036 | +0.002409 | +0.027673 |
+| halloween | -0.031292 | -0.031279 | **+0.006126** |
+| st_patricks | -0.000564 | -0.000136 | -0.000217 |
+
+K is the first candidate to come back positive on Halloween — the real storm that originally motivated fragility-weighted scoring (Island H/I's Halloween failure, Phase 6e). This is a genuine, concrete case where bounded lookahead found a materially different, more real-storm-robust candidate that the old one-step-stopping rule structurally could not reach (growth never backtracks, so once it stops at 4 members it can never see the 12-member island). K's total `net_musd` sum across all 12 scenarios (mid_365d variant) is ≈$1914M, somewhat below H's ≈$2227M -- a real dollar-size-vs-direction-robustness tradeoff, not a strict dominance either way, worth reporting as such.
 
 ## Phase 7 — Figures and writeup (Day 10)
 
