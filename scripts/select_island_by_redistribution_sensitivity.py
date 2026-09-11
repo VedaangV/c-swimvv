@@ -206,9 +206,70 @@ consistently positive, direction-robust result once run against real
 data, the next honest step is the bigger optimization rung, not another
 heuristic tweak.
 
+PHASE 6h: BETWEENNESS-WIDENED SEED POOL -- A DISCOVERY GAP, NOT A SCORING GAP
+-------------------------------------------------------------------------------
+Real-data motivation: Island G's Halloween/St. Patrick's backfill (Phase 6g)
+confirmed it fails all three real storms (0/3) -- so its apparent strength
+was a genuine direction-blindness artifact, not evidence the search was
+missing a better candidate. But the person running this project reasonably
+asked why the real-storm-scored search (which SHOULD generalize better than
+G's topology-only proxy) hadn't already found something at least as
+economically large as G, just correctly signed. Checked directly against
+real data before writing any code: G's own seed substation (96396692) does
+NOT appear anywhere in Island K's `seed_candidate_trace` -- the full list of
+every seed this search actually evaluated. So the search was never blind to
+G's location because real-storm scoring rejected it; it was blind because
+G's seed was never even a CANDIDATE.
+
+Why not: the seed pool has always been (going back to this file's very
+first, pre-real-storm revision that produced G itself -- see git history,
+commit 32eebc8) the top `n_seed_candidates` substations by `risk_weight`
+(0.5*GIC risk + 0.5*econ exposure density -- how valuable/exposed a
+substation's OWN location is). That is a different axis entirely from what
+made G interesting: G's huge redistribution effect comes from being an
+electrically PIVOTAL node (current from all over the network routes through
+it), not from G's own location being especially GIC-risky or GDP-dense.
+current_flow_betweenness_centrality (Newman 2005; Brandes & Fleischer 2005)
+is exactly the measure of that pivotalness -- it's what the deprecated
+proxy that originally selected G was built on (see PHASE 6d section 1
+above) -- but this file never used it to pick CANDIDATES, only (in that
+now-fully-retired revision) to isotropically SCORE them.
+
+Fix: `compute_betweenness_seed_candidates()` computes current-flow
+betweenness ONCE on the full baseline network (a single one-time cost, not
+per-candidate -- contrast with the retired revision's much more expensive
+per-cut recomputation) and takes the top `n_betweenness_candidates`
+eligible substations by that measure, UNION'd with the existing top-
+`n_seed_candidates`-by-`risk_weight` pool (deduplicated). Every seed in
+the combined pool -- however it was nominated -- is then evaluated by
+the exact same real-storm/fragility-weighted `evaluate_cut()` every other
+seed already goes through. Betweenness only WIDENS which substations get a
+chance to be judged by real physics; it never touches net_score or the
+accept/reject decision itself, deliberately -- putting an isotropic,
+direction-blind signal into the actual scoring is the specific mistake
+Phase 6d retired G's method for making, and this fix is careful not to
+reintroduce it through a side door.
+
+Cost: one current_flow_betweenness_centrality solve on ~2600 substations
+(observed cost unknown against this session's real data -- the retired
+per-candidate version of this computation was already flagged as
+expensive; this is cheaper since it happens once, not once per cut, but
+still likely on the order of minutes, not seconds), plus up to
+`n_betweenness_candidates` additional real admittance/GIC solves (~20-40s
+each) for whichever newly-nominated substations weren't already in the
+risk_weight pool.
+
+Honest expectation: this may still come back empty-handed. It's entirely
+possible G's specific location is simply a bad place to cut under real
+storm directions no matter how it's approached -- in which case this run
+confirms G's failure is structural (already correctly avoidable, not
+uncovered by a search gap) rather than finding a new winner. Both outcomes
+are informative.
+
 Usage:
     python scripts/select_island_by_redistribution_sensitivity.py --island j
     python scripts/select_island_by_redistribution_sensitivity.py --island j --exclude a b c d e f g
+    python scripts/select_island_by_redistribution_sensitivity.py --island l --n-betweenness-candidates 10
 """
 
 import argparse
@@ -226,6 +287,7 @@ from scripts.island_graph_utils import (
     sanitize_for_json,
     excluded_nodes_for,
     attach_conductance,
+    largest_component_subgraph,
 )
 from scripts.real_storm_gic import (
     solve_single_iteration,
@@ -250,6 +312,8 @@ N_SEED_CANDIDATES = 10
 SWITCHING_COST_WEIGHT = 0.015
 REDISTRIBUTION_COST_WEIGHT = 1.0
 LOOKAHEAD_STEPS = 2
+N_BETWEENNESS_CANDIDATES = 10
+CFB_SOLVER = "lu"
 
 
 def load_risk_weights() -> dict:
@@ -334,6 +398,34 @@ def evaluate_cut(
     }
 
 
+def compute_betweenness_seed_candidates(
+    G: nx.Graph, seed_pool: set, n_betweenness_candidates: int, solver: str = CFB_SOLVER,
+) -> list:
+    """See module docstring's PHASE 6h. Computes current-flow betweenness
+    ONCE on the full baseline network (largest connected component -- this
+    measure requires a connected graph, see island_graph_utils.
+    largest_component_subgraph) and returns the top `n_betweenness_
+    candidates` substations within `seed_pool` (already min_lines-filtered
+    by the caller) by that measure. This is a discovery aid only -- every
+    substation returned still gets evaluated by the exact same real-storm/
+    fragility-weighted evaluate_cut() every risk_weight-nominated seed
+    goes through, so a high-betweenness-but-direction-wrong candidate
+    (like Island G) is still correctly rejectable; this just gives it a
+    chance to be judged at all."""
+    if n_betweenness_candidates <= 0:
+        return []
+
+    logger.info(
+        f"Computing current-flow betweenness centrality on the baseline network "
+        f"({G.number_of_nodes()} nodes, solver={solver}) to widen the seed candidate pool -- "
+        "a one-time cost, not per-candidate (see module docstring's PHASE 6h)..."
+    )
+    G_baseline = largest_component_subgraph(G)
+    cfb = nx.current_flow_betweenness_centrality(G_baseline, weight="conductance", solver=solver)
+    eligible_cfb = {n: v for n, v in cfb.items() if n in seed_pool}
+    return sorted(eligible_cfb, key=lambda n: eligible_cfb[n], reverse=True)[:n_betweenness_candidates]
+
+
 def _try_bounded_lookahead(
     G: nx.Graph,
     island: set,
@@ -408,6 +500,8 @@ def select_island_by_sensitivity(
     redistribution_cost_weight: float = REDISTRIBUTION_COST_WEIGHT,
     min_lines: int = 1,
     lookahead_steps: int = LOOKAHEAD_STEPS,
+    n_betweenness_candidates: int = N_BETWEENNESS_CANDIDATES,
+    cfb_solver: str = CFB_SOLVER,
 ) -> dict:
     """Run the real-storm-scored greedy search once. Returns a dict with
     the same members/boundary_line_ids/seed/growth_trace shape scripts/
@@ -418,7 +512,10 @@ def select_island_by_sensitivity(
     min_lines restricts the SEED pool only -- see module docstring's
     SEED CANDIDATE POOL. lookahead_steps controls the Phase 6g bounded
     lookahead -- see module docstring's PHASE 6g section. 0 reproduces the
-    old strict one-step-stopping behavior exactly."""
+    old strict one-step-stopping behavior exactly. n_betweenness_candidates
+    controls the Phase 6h betweenness-widened seed pool -- see module
+    docstring's PHASE 6h section. 0 reproduces the pre-Phase-6h behavior
+    (risk_weight-only seed pool) exactly."""
     excluded_nodes = excluded_nodes or set()
     eligible_nodes = set(risk_weights) - excluded_nodes
     if not eligible_nodes:
@@ -438,8 +535,26 @@ def select_island_by_sensitivity(
         )
 
     seed_candidates = sorted(seed_pool, key=lambda n: risk_weights[n], reverse=True)[:n_seed_candidates]
+    betweenness_candidates = compute_betweenness_seed_candidates(
+        G, seed_pool, n_betweenness_candidates, solver=cfb_solver,
+    )
+    added_by_betweenness = [c for c in betweenness_candidates if c not in seed_candidates]
+    if added_by_betweenness:
+        logger.info(
+            f"Widened seed pool with {len(added_by_betweenness)} substation(s) from current-flow "
+            f"betweenness centrality not already in the top-{n_seed_candidates}-by-risk_weight pool "
+            f"(Phase 6h -- see module docstring): {added_by_betweenness}"
+        )
+        seed_candidates = seed_candidates + added_by_betweenness
+    elif n_betweenness_candidates > 0:
+        logger.info(
+            f"Top-{n_betweenness_candidates} substations by current-flow betweenness were already all "
+            f"in the top-{n_seed_candidates}-by-risk_weight pool -- no new seed candidates added."
+        )
+
     logger.info(
         f"Evaluating {len(seed_candidates)} seed candidates (top {n_seed_candidates} by raw risk weight"
+        f"{f' + {len(added_by_betweenness)} by current-flow betweenness' if added_by_betweenness else ''}"
         f"{f', min_lines={min_lines}' if min_lines > 1 else ''}) by their real, worst-case-across-"
         "real-storms redistribution effect (one single-iteration admittance/GIC solve each)..."
     )
@@ -591,6 +706,8 @@ def main(
     redistribution_cost_weight: float = REDISTRIBUTION_COST_WEIGHT,
     min_lines: int = 1,
     lookahead_steps: int = LOOKAHEAD_STEPS,
+    n_betweenness_candidates: int = N_BETWEENNESS_CANDIDATES,
+    cfb_solver: str = CFB_SOLVER,
 ):
     G = load_graph()
     attach_conductance(G)
@@ -616,7 +733,8 @@ def main(
         G, risk_weights, gic_ctx, baseline_gnd_df, exposure, excluded_nodes=excluded_nodes, max_size=max_size,
         n_seed_candidates=n_seed_candidates, switching_cost_weight=switching_cost_weight,
         redistribution_cost_weight=redistribution_cost_weight, min_lines=min_lines,
-        lookahead_steps=lookahead_steps,
+        lookahead_steps=lookahead_steps, n_betweenness_candidates=n_betweenness_candidates,
+        cfb_solver=cfb_solver,
     )
 
     out_path = VA_NETWORK_DIR / f"va_island_{island_id}.json"
@@ -693,10 +811,28 @@ if __name__ == "__main__":
              "(catches a temporarily-worse-but-eventually-better growth path the old strict one-step "
              "stopping rule couldn't see). Set to 0 to reproduce the old strict behavior exactly.",
     )
+    parser.add_argument(
+        "--n-betweenness-candidates", type=int, default=N_BETWEENNESS_CANDIDATES,
+        help="Phase 6h: also evaluate this many top substations by current-flow betweenness "
+             "centrality as seed candidates, in addition to the top --n-seed-candidates by "
+             "risk_weight (deduplicated) -- widens seed DISCOVERY toward electrically pivotal "
+             "substations (like Island G's) that risk_weight alone can miss, while still scoring "
+             "every one of them with the same real-storm/fragility-weighted evaluate_cut(). Costs "
+             "one one-time current-flow-betweenness solve on the full network (minutes, not "
+             "seconds) plus one real admittance/GIC solve per newly-nominated substation. Set to 0 "
+             "to reproduce the pre-Phase-6h behavior (risk_weight-only seed pool) exactly.",
+    )
+    parser.add_argument(
+        "--cfb-solver", type=str, default=CFB_SOLVER, choices=["full", "lu", "cg"],
+        help="networkx current_flow_betweenness_centrality solver (Phase 6h seed widening only). "
+             "'lu' (default) is the same choice this file's original, now-retired current-flow-"
+             "betweenness-based scoring used.",
+    )
     args = parser.parse_args()
     main(
         island_id=args.island, exclude_island_ids=args.exclude, max_size=args.max_size,
         n_seed_candidates=args.n_seed_candidates, switching_cost_weight=args.switching_cost_weight,
         redistribution_cost_weight=args.redistribution_cost_weight, min_lines=args.min_lines,
-        lookahead_steps=args.lookahead_steps,
+        lookahead_steps=args.lookahead_steps, n_betweenness_candidates=args.n_betweenness_candidates,
+        cfb_solver=args.cfb_solver,
     )
