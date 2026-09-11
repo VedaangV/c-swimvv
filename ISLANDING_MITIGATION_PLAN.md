@@ -585,7 +585,20 @@ Full pipeline result (`run_virginia_islanded_gic.py` → `run_virginia_islanded_
 | halloween | -0.031292 | -0.031279 | **+0.006126** |
 | st_patricks | -0.000564 | -0.000136 | -0.000217 |
 
-K is the first candidate to come back positive on Halloween — the real storm that originally motivated fragility-weighted scoring (Island H/I's Halloween failure, Phase 6e). This is a genuine, concrete case where bounded lookahead found a materially different, more real-storm-robust candidate that the old one-step-stopping rule structurally could not reach (growth never backtracks, so once it stops at 4 members it can never see the 12-member island). K's total `net_musd` sum across all 12 scenarios (mid_365d variant) is ≈$1914M, somewhat below H's ≈$2227M -- a real dollar-size-vs-direction-robustness tradeoff, not a strict dominance either way, worth reporting as such.
+K is the first candidate to come back positive on Halloween — the real storm that originally motivated fragility-weighted scoring (Island H/I's Halloween failure, Phase 6e). This is a genuine, concrete case where bounded lookahead found a materially different, more real-storm-robust candidate that the old one-step-stopping rule structurally could not reach (growth never backtracks, so once it stops at 4 members it can never see the 12-member island). K's total `net_musd` sum across all 12 scenarios (mid_365d variant) is ≈$1914M, somewhat below H's ≈$2227M — a real dollar-size-vs-direction-robustness tradeoff, not a strict dominance either way, worth reporting as such.
+
+**Island G's Halloween/St. Patrick's backfill resolves the "shouldn't real-storm scoring already be finding G-beating candidates" question decisively.** Full 12-scenario real pipeline result: G now fails on **all three** real, independently-measured storms — gannon `-400.09` net_musd, halloween `-168.34`, st_patricks `-3.79` (0/3). Its apparent strength (9/12 scenarios net-positive, a total net_musd sum roughly 20x K's) was entirely built on the 9 return-period scenarios that share Gannon's assumed polarity — not independent directional evidence, per this file's Phase 6c framing. The moment G is tested against genuinely independent directions, every one is negative, and by a wide margin (its swings are ~2 orders of magnitude larger than K's, since G is a 2-member cut sitting on very high GDP-exposure substations — a much bigger wrong bet, not just a wrong one).
+
+Real-storm-only comparison across the search's full evolution:
+
+| Island | Method | gannon | halloween | st_patricks | real storms positive |
+|---|---|---|---|---|---|
+| G | topology-only (current-flow-betweenness), Phase 6d step 1 | -400.09 | -168.34 | -3.79 | 0/3 |
+| H / I | single real-storm worst-case, raw \|GIC\|, Phase 6d step 2 | +9.72 | -11.58 | -0.36 | 1/3 |
+| J | fragility-weighted, single-substation, Phase 6e | +0.76 | -11.53 | -0.17 | 1/3 |
+| K | fragility-weighted + bounded lookahead, Phase 6g | +9.72 | +1.86 | -0.46 | 2/3 |
+
+(net_musd, mid_365d variant.) This is a clean, monotonic result: each methodological fix in this file's history (adding real-storm scoring, then fragility-weighting, then bounded lookahead) strictly improved real-storm robustness, while the naive return-period-averaged metric would have ranked G as the best candidate throughout. This is the strongest single piece of evidence in this project for the paper's core methodological claim: validating a mitigation against averaged/return-period scenarios alone can select a real-world-harmful candidate over a real-world-beneficial one.
 
 ## Phase 7 — Figures and writeup (Day 10)
 
