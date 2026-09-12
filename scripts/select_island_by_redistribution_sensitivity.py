@@ -334,11 +334,76 @@ candidate that passes Phase 6i as "likely direction-robust, not yet
 proven" until the real pipeline confirms it, same posture already taken
 for every other in-loop score in this file.
 
+Real result, Island M: 10/12 scenarios net-positive, gannon solidly
+positive (the biggest real-storm margin of any candidate so far), but
+halloween (-0.025 diff_per_day_musd) and st_patricks (-0.0003) both still
+came back slightly negative in the real, full-precision pipeline despite
+M passing the Phase 6i filter at search time -- exactly the honest limit
+above, observed for real. st_patricks' miss is small enough (three orders
+of magnitude below the other real storms' effects) that it may not even
+be a stable result -- the fragility Monte Carlo is unseeded (no
+torch.manual_seed() anywhere in econ/preprocess/p_gic_files.py), so it
+could flip sign on a rerun from pure randomness alone. halloween's miss
+is far larger in relative terms and more likely a real, structural
+residual. This motivated Phase 6j below.
+
+PHASE 6j: LOCAL-SEARCH POLISH -- GROWTH NEVER RECONSIDERS OR REMOVES
+------------------------------------------------------------------------
+The one significant piece of algorithm SHAPE still missing after 6g/6h/6i:
+growth only ever ADDS a member, one at a time, forward. It never
+reconsiders a member already added, and never removes one, no matter how
+much better the island might be without it. Bounded lookahead (Phase 6g)
+only searches forward through hypothetical future adds; it can't undo a
+past one. Island M coming this close (positive on 10/12, including the
+largest real-storm margins yet, with only two small negative real-storm
+residuals left) is exactly the situation where a small structural
+adjustment -- not a bigger search or a stricter filter -- is the more
+likely fix.
+
+Fix: `polish_island()`, run once after the growth loop (and any Phase 6g
+lookahead recoveries within it) settles. Greedy local search, same
+one-move-per-iteration shape as growth itself, up to `--polish-iterations`
+(default POLISH_ITERATIONS) rounds:
+1. REMOVE moves: try dropping each current member. Only valid if the
+   remaining set stays a single connected component (`nx.is_connected`
+   on G's induced subgraph) -- an island has to stay one contiguous
+   region to mean anything physically; a remove that would split it into
+   disconnected fragments is skipped, not evaluated.
+2. SWAP moves: for each current member, try removing it and adding a
+   different substation adjacent to the reduced set's new boundary (this
+   automatically keeps the result connected, since it's exactly the same
+   "add a boundary-adjacent node" operation growth already uses, just
+   applied after a removal).
+3. Every candidate move -- remove or swap -- goes through the identical
+   `evaluate_cut()` and Phase 6i hard filter as every seed/growth
+   candidate. A move is only accepted if it both passes the filter (when
+   `require_real_storm_filter` is True) AND improves `net_score` over the
+   current best. Greedily take the single best improving move each
+   iteration; stop early if no move improves anything, otherwise stop at
+   the iteration cap.
+
+Cost, bluntly: this is the most expensive phase yet. One iteration costs
+roughly (island_size remove-attempts + island_size * boundary-fanout
+swap-attempts) real admittance/GIC solves -- for a 12-member island with
+~15-candidate boundaries, that's on the order of 12 + 12*15 ~ 190 real
+solves PER iteration, each ~20-40s. `--polish-iterations` defaults low
+(3) deliberately; raise it only with the runtime cost in mind.
+
+Honest expectation: polish can only IMPROVE on (or match) what growth
+already found, by construction -- every accepted move strictly improves
+net_score and never violates the hard filter, so it can never make the
+final island worse. But it's still a local search around one specific
+grown island, not a search over all possible islands -- if the fix
+Island M needs isn't reachable by a single remove or swap from where
+growth left it, polish won't find it either, and the honest next step
+would be the bigger optimization rung already named in LIMITATIONS.
+
 Usage:
     python scripts/select_island_by_redistribution_sensitivity.py --island j
     python scripts/select_island_by_redistribution_sensitivity.py --island j --exclude a b c d e f g
     python scripts/select_island_by_redistribution_sensitivity.py --island l --n-betweenness-candidates 10
     python scripts/select_island_by_redistribution_sensitivity.py --island m
+    python scripts/select_island_by_redistribution_sensitivity.py --island n --polish-iterations 5
 """
 
 import argparse
@@ -384,6 +449,7 @@ LOOKAHEAD_STEPS = 2
 N_BETWEENNESS_CANDIDATES = 10
 CFB_SOLVER = "lu"
 SEARCH_FRAGILITY_DRAWS = 2000
+POLISH_ITERATIONS = 3
 
 
 def load_risk_weights() -> dict:
@@ -598,6 +664,108 @@ def _try_bounded_lookahead(
     return None
 
 
+def _boundary_candidates_for(G: nx.Graph, members: set, eligible_nodes: set) -> set:
+    """Substations adjacent to `members`'s boundary, not already in
+    `members` -- the same "who could grow into this set next" computation
+    the main growth loop uses, factored out so polish_island() can reuse
+    it against a hypothetically-reduced member set."""
+    boundary = boundary_edges(G, members)
+    candidates = {v for (u, v) in boundary if u in members} | {u for (u, v) in boundary if v in members}
+    return {c for c in candidates if c not in members and c in eligible_nodes}
+
+
+def polish_island(
+    G: nx.Graph,
+    island: set,
+    current_eval: dict,
+    risk_weights: dict,
+    gic_ctx: dict,
+    baseline_gnd_df: pd.DataFrame,
+    exposure: pd.DataFrame,
+    eligible_nodes: set,
+    switching_cost_weight: float,
+    redistribution_cost_weight: float,
+    fragility_draws: int,
+    require_real_storm_filter: bool,
+    max_iterations: int,
+) -> tuple:
+    """PHASE 6j local-search polish -- see module docstring. Growth only
+    ever ADDS members, one at a time, forward; this runs AFTER growth (and
+    any Phase 6g lookahead) settles, trying single-member REMOVE and SWAP
+    moves against the final island, greedily accepting whichever available
+    move most improves net_score, same one-move-per-iteration shape as
+    growth itself. Every candidate move goes through the identical
+    evaluate_cut() and Phase 6i hard filter as every seed/growth candidate
+    -- a move is only ever accepted if it passes the filter (when
+    require_real_storm_filter is True) AND strictly improves net_score, so
+    polish can only match or improve on what growth already found, never
+    make it worse.
+
+    Returns (island: set, current_eval: dict, polish_trace: list)."""
+    polish_trace = []
+    for iteration in range(max_iterations):
+        best_move, best_eval, best_desc = None, None, None
+
+        if len(island) > 1:
+            for m in island:
+                trial_island = island - {m}
+                if not nx.is_connected(G.subgraph(trial_island)):
+                    continue
+                ev = evaluate_cut(
+                    G, trial_island, risk_weights, gic_ctx, baseline_gnd_df, exposure,
+                    switching_cost_weight=switching_cost_weight,
+                    redistribution_cost_weight=redistribution_cost_weight, fragility_draws=fragility_draws,
+                )
+                if require_real_storm_filter and not ev["passes_real_storm_filter"]:
+                    continue
+                if ev["net_score"] > current_eval["net_score"] and (best_eval is None or ev["net_score"] > best_eval["net_score"]):
+                    best_move, best_eval, best_desc = ("remove", trial_island, m, None), ev, f"remove {m}"
+
+        for m in island:
+            reduced = island - {m}
+            if not reduced or not nx.is_connected(G.subgraph(reduced)):
+                continue
+            for c in _boundary_candidates_for(G, reduced, eligible_nodes):
+                if c == m:
+                    continue
+                trial_island = reduced | {c}
+                ev = evaluate_cut(
+                    G, trial_island, risk_weights, gic_ctx, baseline_gnd_df, exposure,
+                    switching_cost_weight=switching_cost_weight,
+                    redistribution_cost_weight=redistribution_cost_weight, fragility_draws=fragility_draws,
+                )
+                if require_real_storm_filter and not ev["passes_real_storm_filter"]:
+                    continue
+                if ev["net_score"] > current_eval["net_score"] and (best_eval is None or ev["net_score"] > best_eval["net_score"]):
+                    best_move, best_eval, best_desc = ("swap", trial_island, m, c), ev, f"swap {m} -> {c}"
+
+        if best_move is None:
+            logger.info(
+                f"PHASE 6j polish converged after {iteration} accepted move(s): no remaining "
+                "remove/swap move improves net_score while passing the real-storm filter."
+            )
+            break
+
+        _, trial_island, removed, added = best_move
+        prev_score = current_eval["net_score"]
+        island = trial_island
+        current_eval = best_eval
+        polish_trace.append({
+            "iteration": iteration, "move": best_move[0], "removed": removed, "added": added,
+            "reason": f"{best_desc} ({prev_score:.4f} -> {current_eval['net_score']:.4f})",
+            "island_size": len(island), **{k: v for k, v in current_eval.items() if k != "boundary"},
+        })
+        logger.info(
+            f"PHASE 6j polish move {iteration}: {best_desc} -- net_score {prev_score:.4f} -> "
+            f"{current_eval['net_score']:.4f}, worst_case_total_effect="
+            f"{current_eval['worst_case_total_effect']:.6f}."
+        )
+    else:
+        logger.info(f"PHASE 6j polish hit its {max_iterations}-iteration cap without converging naturally.")
+
+    return island, current_eval, polish_trace
+
+
 def select_island_by_sensitivity(
     G: nx.Graph,
     risk_weights: dict,
@@ -615,6 +783,7 @@ def select_island_by_sensitivity(
     cfb_solver: str = CFB_SOLVER,
     fragility_draws: int = SEARCH_FRAGILITY_DRAWS,
     require_real_storm_filter: bool = True,
+    polish_iterations: int = POLISH_ITERATIONS,
 ) -> dict:
     """Run the real-storm-scored greedy search once. Returns a dict with
     the same members/boundary_line_ids/seed/growth_trace shape scripts/
@@ -635,7 +804,11 @@ def select_island_by_sensitivity(
     docstring's PHASE 6i section. True (default) means a candidate that
     fails on any of the three real storms is NEVER added to the island,
     seed or growth step, even if it's the "best available" by net_score;
-    False reproduces pre-Phase-6i behavior (net_score alone decides)."""
+    False reproduces pre-Phase-6i behavior (net_score alone decides).
+    polish_iterations controls the Phase 6j local-search polish (single-
+    member remove/swap moves after growth settles) -- see module
+    docstring's PHASE 6j section. 0 disables polish and returns growth's
+    result unchanged."""
     excluded_nodes = excluded_nodes or set()
     eligible_nodes = set(risk_weights) - excluded_nodes
     if not eligible_nodes:
@@ -833,6 +1006,19 @@ def select_island_by_sensitivity(
             "turning over -- worth reviewing risk weights or switching_cost_weight."
         )
 
+    pre_polish_net_score = current_eval["net_score"]
+    polish_trace = []
+    if polish_iterations > 0:
+        logger.info(
+            f"Growth complete at {len(island)} member(s), net_score={pre_polish_net_score:.4f}. Starting "
+            f"PHASE 6j local-search polish (up to {polish_iterations} iteration(s))..."
+        )
+        island, current_eval, polish_trace = polish_island(
+            G, island, current_eval, risk_weights, gic_ctx, baseline_gnd_df, exposure, eligible_nodes,
+            switching_cost_weight, redistribution_cost_weight, fragility_draws, require_real_storm_filter,
+            polish_iterations,
+        )
+
     boundary = current_eval["boundary"]
     boundary_line_ids = []
     for u, v in boundary:
@@ -851,6 +1037,7 @@ def select_island_by_sensitivity(
         "worst_case_total_effect": current_eval["worst_case_total_effect"],
         "worst_case_storm_benefit": current_eval["benefit"],
         "net_score": current_eval["net_score"],
+        "pre_polish_net_score": pre_polish_net_score,
         "seed_passed_real_storm_filter": seed_passed_filter,
         "final_island_passes_real_storm_filter": current_eval["passes_real_storm_filter"],
         "hit_size_cap": hit_cap,
@@ -858,6 +1045,7 @@ def select_island_by_sensitivity(
         "rejected_candidate": rejected_candidate,
         "seed_candidate_trace": seed_candidate_trace,
         "growth_trace": trace,
+        "polish_trace": polish_trace,
     }
 
 
@@ -874,6 +1062,7 @@ def main(
     cfb_solver: str = CFB_SOLVER,
     fragility_draws: int = SEARCH_FRAGILITY_DRAWS,
     require_real_storm_filter: bool = True,
+    polish_iterations: int = POLISH_ITERATIONS,
 ):
     G = load_graph()
     attach_conductance(G)
@@ -901,7 +1090,7 @@ def main(
         redistribution_cost_weight=redistribution_cost_weight, min_lines=min_lines,
         lookahead_steps=lookahead_steps, n_betweenness_candidates=n_betweenness_candidates,
         cfb_solver=cfb_solver, fragility_draws=fragility_draws,
-        require_real_storm_filter=require_real_storm_filter,
+        require_real_storm_filter=require_real_storm_filter, polish_iterations=polish_iterations,
     )
 
     out_path = VA_NETWORK_DIR / f"va_island_{island_id}.json"
@@ -945,6 +1134,18 @@ def main(
         f"redistribution_cost={t['redistribution_cost']:.4f}, net_score={t['net_score']:.4f})"
         for t in island["growth_trace"]
     ))
+    if island["polish_trace"]:
+        logger.info(
+            f"PHASE 6j polish trace ({len(island['polish_trace'])} accepted move(s), "
+            f"pre-polish net_score={island['pre_polish_net_score']:.4f} -> "
+            f"final net_score={island['net_score']:.4f}):\n" + "\n".join(
+                f"  iteration {p['iteration']}: {p['move']} removed={p['removed']} added={p['added']} -- "
+                f"{p['reason']} (size={p['island_size']}, net_score={p['net_score']:.4f})"
+                for p in island["polish_trace"]
+            )
+        )
+    else:
+        logger.info("PHASE 6j polish: no improving move found (or --polish-iterations 0) -- island unchanged.")
 
 
 if __name__ == "__main__":
@@ -1022,6 +1223,16 @@ if __name__ == "__main__":
              "is merely the least-bad available). Default: filter ON -- a candidate that makes any "
              "of gannon/halloween/st_patricks worse for whole Virginia is never added, seed or growth.",
     )
+    parser.add_argument(
+        "--polish-iterations", type=int, default=POLISH_ITERATIONS,
+        help="Phase 6j: after growth (and any Phase 6g lookahead) settles, run up to this many "
+             "rounds of single-member remove/swap local search, greedily accepting whichever move "
+             "most improves net_score while still passing the Phase 6i filter. Growth only ever "
+             "adds members forward and never reconsiders one already added -- this is the one "
+             "significant algorithm-shape gap that leaves. Expensive: roughly (island_size + "
+             "island_size * boundary_fanout) real admittance/GIC solves PER iteration. Set to 0 to "
+             "disable and return growth's result unchanged.",
+    )
     args = parser.parse_args()
     main(
         island_id=args.island, exclude_island_ids=args.exclude, max_size=args.max_size,
@@ -1029,5 +1240,5 @@ if __name__ == "__main__":
         redistribution_cost_weight=args.redistribution_cost_weight, min_lines=args.min_lines,
         lookahead_steps=args.lookahead_steps, n_betweenness_candidates=args.n_betweenness_candidates,
         cfb_solver=args.cfb_solver, fragility_draws=args.fragility_draws,
-        require_real_storm_filter=not args.no_real_storm_filter,
+        require_real_storm_filter=not args.no_real_storm_filter, polish_iterations=args.polish_iterations,
     )
