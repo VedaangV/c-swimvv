@@ -608,7 +608,29 @@ Real-storm-only comparison across the search's full evolution:
 
 **Fix: `compute_betweenness_seed_candidates()`.** Computes current-flow betweenness once on the full baseline network (one-time cost, not per-candidate) and takes the top `--n-betweenness-candidates` eligible substations by that measure, unioned with the existing risk_weight-ranked pool. Every seed in the combined pool, however nominated, still goes through the identical real-storm/fragility-weighted `evaluate_cut()` as before -- betweenness only widens which substations get a *chance* to be judged by real physics; it never enters `net_score` itself. Deliberately conservative: mixing an isotropic signal directly into the scoring function is the specific mistake Phase 6d's retirement of G's method was about, and this fix doesn't reopen that door.
 
-**Status: implemented, not yet run against real data.** Usage: `python scripts/select_island_by_redistribution_sensitivity.py --island l` (defaults: `--n-betweenness-candidates 10 --lookahead-steps 2`, no `--exclude`). Expect a real one-time current-flow-betweenness solve on ~2600 substations (cost against real data not yet observed -- likely minutes, not seconds) plus up to 10 extra real admittance/GIC solves for newly-nominated seeds. Two honest possible outcomes: a new, real-storm-robust candidate as economically large as G (a genuine win), or every betweenness-nominated seed scoring poorly under real storms (confirming G's location is structurally bad to cut, not merely undiscovered) -- both are reportable.
+**Status: run against real data -- Island L.** Betweenness widening did nominate new seed candidates not already in the risk_weight pool, but the result still came back 0/3 on real storms (gannon `-0.005`, halloween `-0.037`, st_patricks `-0.001` net_musd) -- the same failure pattern as G. This confirms G's failure (and apparently its broader neighborhood's) is structural, not a Phase 6h-sized discovery gap -- a genuinely useful negative result, not a wasted run. It directly motivated Phase 6i below.
+
+## Phase 6i — Hard real-storm filter: fixing a second, deeper proxy gap
+
+**The question that found this.** If the search explicitly worst-cases `redistribution_cost` over real storms, why does it keep landing on real-storm failures (G, L) at all? Found by re-reading `evaluate_cut()`, not by running more searches: `benefit` was never storm-aware in the first place.
+
+```
+benefit = sum(risk_weights.get(n, 0.0) for n in members)          # static, isotropic
+redistribution_cost = worst_case_redistribution_cost(per_storm)   # real, worst-cased
+net_score = benefit - redistribution_cost_weight * redistribution_cost - switching_cost_weight * switching_cost
+```
+
+`fragility_weighted_redistribution()` already computes a real, per-storm `own_effect` (the island's own fragility-weighted improvement from being islanded) inside `per_storm` -- but `evaluate_cut()` only ever pulled `redistribution_cost_real` out of it, discarding `own_effect` in favor of the static `risk_weight` proxy. So `net_score` was worst-casing *half* the real picture (cost to the rest of the grid) while the other half (benefit to the island's own members) stayed a non-storm-specific topology guess. A candidate whose static `risk_weight` overstated its real, direction-specific own-effect could look net-positive at search time while genuinely failing in the real pipeline -- exactly what G and L both did.
+
+**Fix, two parts.**
+1. `benefit` is now `-worst_case_total_effect`, where `total_effect[storm] = own_effect[storm] + redistribution_cost_real[storm]` -- both already the same fragility-weighted units from the same call, so summing needs no cross-unit calibration (unlike mixing in `risk_weight` would). `worst_case_total_effect` is the max over gannon/halloween/st_patricks. `net_score` is now 100% real and 100% worst-cased, with no static proxy left in it.
+2. A **hard filter**, not just a reweighted score: `passes_real_storm_filter = worst_case_total_effect <= 0.0`. Every selection point -- seed choice, growth-step choice, every step inside bounded lookahead -- now refuses to add any candidate that fails this, regardless of net_score. A failing candidate is never a member, not merely disfavored. (If literally every seed candidate fails, the search still returns the least-bad one rather than crashing, flagged clearly as `seed_passed_real_storm_filter: false`.)
+
+`risk_weight` keeps a role, just not in scoring: purely a candidate-discovery heuristic now (same supporting role as Phase 6h's betweenness), no vote in the actual decision.
+
+Also raised the search's fragility Monte Carlo draw count from `real_storm_gic.py`'s `CHEAP_FRAGILITY_DRAWS` default (300) to `SEARCH_FRAGILITY_DRAWS` (2000, `--fragility-draws`) for this file's `evaluate_cut()` calls specifically -- a hard filter is only trustworthy if what it gates on isn't dominated by Monte Carlo noise, and the whole Phase 6f precision-bug episode is a reminder that small real effects are exactly where that noise bites hardest. Still far cheaper than the real pipeline's 20,000+ draws, and still one batch (kept under 5000 to preserve `_simulate_scenario`'s early-stop convergence check staying inert).
+
+**Status: implemented, not yet run against real data.** Usage: `python scripts/select_island_by_redistribution_sensitivity.py --island m` (defaults now include the Phase 6i filter on, `--fragility-draws 2000`, plus Phase 6g/6h's `--lookahead-steps 2 --n-betweenness-candidates 10`, no `--exclude`). Honest limit: this raises the odds a selected island survives the real 20,000-draw/IO-model pipeline: it cannot guarantee it, since the filter still runs on an approximation, just a much less noisy one than before. A candidate that passes Phase 6i should be treated as "likely direction-robust, not yet proven" until the real pipeline confirms it.
 
 ## Phase 7 — Figures and writeup (Day 10)
 

@@ -86,30 +86,25 @@ island plus one growth candidate):
    economic exposure data (Virginia only, ~413 substations) -- a closer
    match to the actual whole-Virginia econ objective than the prior
    PJM-wide raw-|GIC| version.
-4. benefit = sum of risk_weight over `members` -- these substations'
-   own GIC-risk/economic-exposure no longer needs to route through the
-   part of the grid being protected. Still the static risk_weight (GIC
-   risk + economic exposure density), NOT fragility-weighted -- only
-   redistribution_cost changed; benefit is cheap to keep as a simple
-   proxy since it's summed over a handful of members, not the whole rest
-   of the network.
+4. benefit -- SUPERSEDED by Phase 6i below. Used to be the static sum of
+   risk_weight over `members`; is now -worst_case_total_effect, the real,
+   worst-case-across-real-storms whole-Virginia effect. See PHASE 6i.
 5. switching_cost = voltage-weighted boundary cost (unchanged --
    see scripts/island_graph_utils.py's edge_cost()).
 
-   SWITCHING_COST_WEIGHT (0.015) and REDISTRIBUTION_COST_WEIGHT (1.0)
-   were calibrated for the raw-|GIC| version's scale (per-storm
-   magnitudes in the 1-30 range). Fragility-weighted redistribution_cost
-   lives in expected-GDP-affected units instead -- a probability
-   (typically << 1) times a GDP exposure value, likely a very different
-   (probably much smaller) magnitude. This is a FOURTH real-data
-   calibration pass in this file's history (after SUM-vs-MEAN, the
-   0.1-vs-0.015 switching-cost-weight fix, and the raw-|GIC| rescaling
-   itself) -- expect it, don't treat it as a sign of an error: it is the
+   SWITCHING_COST_WEIGHT (0.015) was calibrated for the raw-|GIC|
+   version's scale (per-storm magnitudes in the 1-30 range); benefit and
+   redistribution_cost's scales have both changed since (fragility-
+   weighted, Phase 6e; then real-worst-case-total, Phase 6i) without a
+   fresh switching_cost_weight recalibration against the new numbers --
+   expect this to need another pass once real magnitudes are observed,
    same "check real output magnitudes, recalibrate" step this file has
    needed every time its scoring function's underlying units changed.
-6. net_score = benefit - redistribution_cost_weight * redistribution_cost
-   - switching_cost_weight * switching_cost. Greedily maximized, same
-   stopping rule as before (stop the moment no candidate improves it).
+6. net_score -- SUPERSEDED by Phase 6i below. Used to be benefit -
+   redistribution_cost_weight * redistribution_cost - switching_cost_
+   weight * switching_cost, mixing a static topology proxy (benefit) with
+   a real worst-cased quantity (redistribution_cost). See PHASE 6i for
+   why that was a real gap and what replaced it.
 
 RISK WEIGHTS
 ------------
@@ -119,6 +114,12 @@ generation term anywhere -- see scripts/deprecated_sci_islanding/
 README.md's "Generation-anchoring is retired too" for why (Island G,
 selected with zero generation requirement, beat generation-anchored
 Island F's 6/10 with 9/10).
+
+PHASE 6i (see below) removed risk_weight from net_score/benefit entirely
+-- it now serves ONLY as a candidate-discovery heuristic (which
+substations rank in the top-`n_seed_candidates` seed pool), same
+supporting role current-flow betweenness plays for Phase 6h. It no
+longer has any vote in which candidate the search actually selects.
 
 SEED CANDIDATE POOL
 --------------------
@@ -259,17 +260,85 @@ still likely on the order of minutes, not seconds), plus up to
 each) for whichever newly-nominated substations weren't already in the
 risk_weight pool.
 
-Honest expectation: this may still come back empty-handed. It's entirely
-possible G's specific location is simply a bad place to cut under real
-storm directions no matter how it's approached -- in which case this run
-confirms G's failure is structural (already correctly avoidable, not
-uncovered by a search gap) rather than finding a new winner. Both outcomes
-are informative.
+Honest expectation, and what actually happened: Island L (this fix's real
+run) DID nominate substations current_flow_betweenness ranked highly that
+weren't already in the risk_weight seed pool, but still came back 0/3 on
+real storms (gannon -0.005, halloween -0.037, st_patricks -0.001 net_musd)
+-- confirming G's failure mode (and apparently its whole neighborhood's)
+is structural, not a Phase 6h-sized discovery gap. That result is what
+motivated Phase 6i below.
+
+PHASE 6i: HARD REAL-STORM FILTER -- FIXING A SECOND, DEEPER PROXY GAP
+------------------------------------------------------------------------
+Real-data motivation: Island L still failing all three real storms despite
+a widened seed pool raised a sharper question -- why does a search that
+explicitly worst-cases redistribution_cost over real storms keep landing
+on real-storm failures at all? Answer, found by re-reading evaluate_cut()
+rather than running more searches: `benefit` was NEVER storm-aware.
+
+   benefit = sum(risk_weights.get(n, 0.0) for n in members)   # static, isotropic
+   redistribution_cost = worst_case_redistribution_cost(per_storm)  # real, worst-cased
+   net_score = benefit - redistribution_cost_weight * redistribution_cost - switching_cost_weight * switching_cost
+
+`fragility_weighted_redistribution()` already computes a real, per-storm
+`own_effect` (the members' own fragility-weighted improvement from being
+islanded) inside `per_storm` -- but evaluate_cut() only ever pulled
+`redistribution_cost_real` out of it for scoring, discarding `own_effect`
+in favor of the static `risk_weight` proxy. So net_score was worst-casing
+HALF of the real per-storm picture (the cost to the rest of the network)
+while the other half (the benefit to the island's own members) stayed a
+non-storm-specific topology guess. A candidate whose static risk_weight
+overstated its real, direction-specific own-effect could look net-positive
+at search time while genuinely failing in the real pipeline -- exactly
+what G and L both did.
+
+Fix, two parts:
+1. `benefit` is now `-worst_case_total_effect`, where `total_effect[storm]
+   = own_effect[storm] + redistribution_cost_real[storm]` (both already
+   the same fragility-weighted-expected-GDP-affected units from the same
+   call, so summing them needs no cross-unit calibration, unlike mixing
+   in risk_weight would) and `worst_case_total_effect = max` over gannon/
+   halloween/st_patricks. `net_score = redistribution_cost_weight *
+   benefit - switching_cost_weight * switching_cost` -- 100% real,
+   100% worst-cased, no static proxy left in it anywhere.
+2. A HARD FILTER, not just a reweighted score: `passes_real_storm_filter
+   = worst_case_total_effect <= 0.0`. Every selection point -- seed
+   choice, growth-step choice, and every step inside bounded lookahead --
+   now refuses to add ANY candidate that fails this, regardless of its
+   net_score relative to other failing candidates. A failing candidate is
+   simply never a member, not merely disfavored. (Exception: if literally
+   every evaluated SEED candidate fails, the search still returns the
+   least-bad one rather than crashing -- same "select best available, warn
+   loudly" convention this file already used for net_score <= 0 -- but
+   flags `seed_passed_real_storm_filter: false` in the output so this is
+   never silently mistaken for a real pass.)
+
+`risk_weight` keeps a role, just not in scoring: it's still one of the two
+candidate-DISCOVERY heuristics (alongside Phase 6h's betweenness) that
+decide who gets a real solve spent on them in the first place.
+
+Also raised `fragility_draws` from real_storm_gic.py's CHEAP_FRAGILITY_
+DRAWS default (300) to SEARCH_FRAGILITY_DRAWS (2000, `--fragility-draws`)
+for this file's own evaluate_cut() calls specifically -- a hard filter is
+only trustworthy if the quantity it gates on isn't dominated by Monte
+Carlo noise, and 300 draws is noisier than 2000 for the same reason a
+small island's effect was the one Phase 6f's precision bug hit first.
+Still far cheaper than the real pipeline's 20,000+ draws, and still one
+batch (see real_storm_gic.py: must stay under 5000 to keep the early-stop
+convergence check inert).
+
+Honest limit: this raises the odds a selected island survives the real
+20,000-draw/IO-model pipeline, it cannot guarantee it -- the filter still
+runs on an approximation, just a much less noisy one than before. Treat a
+candidate that passes Phase 6i as "likely direction-robust, not yet
+proven" until the real pipeline confirms it, same posture already taken
+for every other in-loop score in this file.
 
 Usage:
     python scripts/select_island_by_redistribution_sensitivity.py --island j
     python scripts/select_island_by_redistribution_sensitivity.py --island j --exclude a b c d e f g
     python scripts/select_island_by_redistribution_sensitivity.py --island l --n-betweenness-candidates 10
+    python scripts/select_island_by_redistribution_sensitivity.py --island m
 """
 
 import argparse
@@ -314,6 +383,7 @@ REDISTRIBUTION_COST_WEIGHT = 1.0
 LOOKAHEAD_STEPS = 2
 N_BETWEENNESS_CANDIDATES = 10
 CFB_SOLVER = "lu"
+SEARCH_FRAGILITY_DRAWS = 2000
 
 
 def load_risk_weights() -> dict:
@@ -368,12 +438,30 @@ def evaluate_cut(
     exposure: pd.DataFrame,
     switching_cost_weight: float = SWITCHING_COST_WEIGHT,
     redistribution_cost_weight: float = REDISTRIBUTION_COST_WEIGHT,
+    fragility_draws: int = None,
 ) -> dict:
     """Score cutting `members`'s induced boundary -- see module
-    docstring's SCORING. Requires one real single-iteration admittance/
-    GIC solve (the expensive part -- see scripts/real_storm_gic.py's
-    module docstring for the cost tradeoff this implies) plus two cheap
-    fragility-model calls per real storm (before/after)."""
+    docstring's SCORING and PHASE 6i. Requires one real single-iteration
+    admittance/GIC solve (the expensive part -- see scripts/real_storm_
+    gic.py's module docstring for the cost tradeoff this implies) plus
+    two cheap fragility-model calls per real storm (before/after).
+
+    PHASE 6i: `risk_weights` is no longer used here at all -- kept as a
+    parameter only because callers (seed/growth loops) still pass it for
+    other purposes (candidate discovery). `benefit` used to be the static
+    sum of risk_weight (GIC risk + econ exposure density) over `members`
+    -- an isotropic, non-storm-specific proxy. It is now the real,
+    worst-case-across-the-three-real-storms whole-Virginia effect,
+    sign-flipped so positive still means good: `own_effect` (the real
+    fragility-weighted benefit TO members) and `redistribution_cost_real`
+    (the real fragility-weighted cost to everyone else) are the same
+    units from the same fragility_weighted_redistribution() call, so
+    summing them per storm is legitimate (no cross-unit calibration
+    needed, unlike the old risk_weight-vs-redistribution_cost split).
+    `passes_real_storm_filter` is the Phase 6i hard gate: True only if
+    this candidate's worst real storm doesn't make whole-Virginia worse
+    off, at this search's own cheap-draw approximation -- callers use it
+    to refuse ever adding a candidate that fails it, seed or growth."""
     boundary = boundary_edges(G, members)
     boundary_line_ids = set()
     for u, v in boundary:
@@ -381,16 +469,24 @@ def evaluate_cut(
 
     scratch_dirs = get_search_scratch_dirs()
     candidate_df = solve_single_iteration(gic_ctx, boundary_line_ids, scratch_dirs["gic_dir"], scratch_dirs["gnd_gic_dir"])
-    per_storm = fragility_weighted_redistribution(baseline_gnd_df, candidate_df, members, exposure)
+    fragility_kwargs = {} if fragility_draws is None else {"draws": fragility_draws}
+    per_storm = fragility_weighted_redistribution(baseline_gnd_df, candidate_df, members, exposure, **fragility_kwargs)
     redistribution_cost = worst_case_redistribution_cost(per_storm)
 
-    benefit = sum(risk_weights.get(n, 0.0) for n in members)
+    total_effect_by_storm = {
+        storm: v["own_effect"] + v["redistribution_cost_real"] for storm, v in per_storm.items()
+    }
+    worst_case_total_effect = max(total_effect_by_storm.values()) if total_effect_by_storm else 0.0
+    benefit = -worst_case_total_effect
     switching_cost = total_boundary_cost(G, boundary)
-    net_score = benefit - redistribution_cost_weight * redistribution_cost - switching_cost_weight * switching_cost
+    net_score = redistribution_cost_weight * benefit - switching_cost_weight * switching_cost
 
     return {
         "boundary": boundary,
         "benefit": benefit,
+        "worst_case_total_effect": worst_case_total_effect,
+        "total_effect_by_storm": total_effect_by_storm,
+        "passes_real_storm_filter": worst_case_total_effect <= 0.0,
         "redistribution_cost": redistribution_cost,
         "per_storm": per_storm,
         "switching_cost": switching_cost,
@@ -441,15 +537,24 @@ def _try_bounded_lookahead(
     redistribution_cost_weight: float,
     max_size: int,
     lookahead_steps: int,
+    fragility_draws: int = None,
+    require_real_storm_filter: bool = True,
 ) -> list | None:
     """See module docstring's PHASE 6g. `first_candidate`/`first_eval` is
     the single best growth candidate at this step, already known to score
-    WORSE than `current_eval` (the old stopping rule's trigger condition).
-    Tentatively commits to it anyway and keeps greedily growing (single
-    best candidate per step, not branching) for up to `lookahead_steps`
-    more steps, checking after every step -- including this first one --
-    whether net_score has climbed back past `current_eval`'s score (the
-    score BEFORE the tentative step, not just past first_eval).
+    WORSE than `current_eval` (the old stopping rule's trigger condition)
+    -- and, since the caller only calls this with a candidate that already
+    passed the Phase 6i hard real-storm filter, already known to be
+    real-storm-eligible itself. Tentatively commits to it anyway and keeps
+    greedily growing (single best candidate per step, not branching) for
+    up to `lookahead_steps` more steps, checking after every step --
+    including this first one -- whether net_score has climbed back past
+    `current_eval`'s score (the score BEFORE the tentative step, not just
+    past first_eval). Every lookahead step is ALSO restricted to
+    real-storm-filter-passing candidates when require_real_storm_filter is
+    True -- lookahead is only allowed to explore a path where every single
+    member ever added is independently real-storm-eligible, never a
+    temporarily-failing state.
 
     Returns the list of (candidate, eval) pairs to commit, ending at the
     first point recovery happened, or None if the lookahead budget ran
@@ -475,9 +580,15 @@ def _try_bounded_lookahead(
             ev = evaluate_cut(
                 G, trial_island | {c}, risk_weights, gic_ctx, baseline_gnd_df, exposure,
                 switching_cost_weight=switching_cost_weight, redistribution_cost_weight=redistribution_cost_weight,
+                fragility_draws=fragility_draws,
             )
+            if require_real_storm_filter and not ev["passes_real_storm_filter"]:
+                continue
             if best_c_eval is None or ev["net_score"] > best_c_eval["net_score"]:
                 best_c, best_c_eval = c, ev
+
+        if best_c is None:
+            break
 
         trial_island.add(best_c)
         path.append((best_c, best_c_eval))
@@ -502,6 +613,8 @@ def select_island_by_sensitivity(
     lookahead_steps: int = LOOKAHEAD_STEPS,
     n_betweenness_candidates: int = N_BETWEENNESS_CANDIDATES,
     cfb_solver: str = CFB_SOLVER,
+    fragility_draws: int = SEARCH_FRAGILITY_DRAWS,
+    require_real_storm_filter: bool = True,
 ) -> dict:
     """Run the real-storm-scored greedy search once. Returns a dict with
     the same members/boundary_line_ids/seed/growth_trace shape scripts/
@@ -515,7 +628,14 @@ def select_island_by_sensitivity(
     old strict one-step-stopping behavior exactly. n_betweenness_candidates
     controls the Phase 6h betweenness-widened seed pool -- see module
     docstring's PHASE 6h section. 0 reproduces the pre-Phase-6h behavior
-    (risk_weight-only seed pool) exactly."""
+    (risk_weight-only seed pool) exactly. fragility_draws overrides
+    evaluate_cut()'s Monte Carlo draw count (see real_storm_gic.py's
+    CHEAP_FRAGILITY_DRAWS) -- None uses that module's default.
+    require_real_storm_filter is the Phase 6i hard gate -- see module
+    docstring's PHASE 6i section. True (default) means a candidate that
+    fails on any of the three real storms is NEVER added to the island,
+    seed or growth step, even if it's the "best available" by net_score;
+    False reproduces pre-Phase-6i behavior (net_score alone decides)."""
     excluded_nodes = excluded_nodes or set()
     eligible_nodes = set(risk_weights) - excluded_nodes
     if not eligible_nodes:
@@ -560,15 +680,33 @@ def select_island_by_sensitivity(
     )
 
     seed_candidate_trace = []
-    best_seed, best_eval = None, None
+    all_seed_evals = []
     for s in seed_candidates:
         ev = evaluate_cut(
             G, {s}, risk_weights, gic_ctx, baseline_gnd_df, exposure,
             switching_cost_weight=switching_cost_weight, redistribution_cost_weight=redistribution_cost_weight,
+            fragility_draws=fragility_draws,
         )
         seed_candidate_trace.append({"candidate": s, **{k: v for k, v in ev.items() if k != "boundary"}})
-        if best_eval is None or ev["net_score"] > best_eval["net_score"]:
-            best_seed, best_eval = s, ev
+        all_seed_evals.append((s, ev))
+
+    passing_seed_evals = [(s, ev) for s, ev in all_seed_evals if ev["passes_real_storm_filter"]]
+    seed_pool_for_selection = all_seed_evals
+    seed_passed_filter = True
+    if require_real_storm_filter:
+        if passing_seed_evals:
+            seed_pool_for_selection = passing_seed_evals
+        else:
+            seed_passed_filter = False
+            logger.warning(
+                f"PHASE 6i: NONE of the {len(seed_candidates)} evaluated seed candidates pass the hard "
+                "real-storm-positivity filter (worst-case total effect over gannon/halloween/st_patricks "
+                "<= 0). Falling back to the best available by net_score anyway, but the resulting island "
+                "will NOT be positive across all three real storms even at this search's own cheap-draw "
+                "approximation -- a real signal about this candidate pool, not a search bug."
+            )
+
+    best_seed, best_eval = max(seed_pool_for_selection, key=lambda pair: pair[1]["net_score"])
 
     if best_eval["net_score"] <= 0:
         logger.warning(
@@ -604,13 +742,35 @@ def select_island_by_sensitivity(
             break
 
         best_candidate, best_candidate_eval = None, None
+        n_failed_filter = 0
         for c in candidates:
             trial_eval = evaluate_cut(
                 G, island | {c}, risk_weights, gic_ctx, baseline_gnd_df, exposure,
                 switching_cost_weight=switching_cost_weight, redistribution_cost_weight=redistribution_cost_weight,
+                fragility_draws=fragility_draws,
             )
+            if require_real_storm_filter and not trial_eval["passes_real_storm_filter"]:
+                n_failed_filter += 1
+                continue
             if best_candidate_eval is None or trial_eval["net_score"] > best_candidate_eval["net_score"]:
                 best_candidate, best_candidate_eval = c, trial_eval
+
+        if best_candidate is None:
+            stop_reason = "no_candidate_passes_real_storm_filter"
+            logger.info(
+                f"Growth stopped at {len(island)} member(s): all {len(candidates)} evaluated boundary "
+                "candidate(s) failed the Phase 6i hard real-storm-positivity filter (worst-case total "
+                "effect over gannon/halloween/st_patricks > 0) -- none are eligible to grow into, "
+                "regardless of net_score. The current island is kept as-is (it already passes)."
+            )
+            break
+
+        if n_failed_filter:
+            logger.info(
+                f"{n_failed_filter}/{len(candidates)} boundary candidate(s) failed the Phase 6i hard "
+                f"real-storm-positivity filter and were excluded from consideration this step "
+                f"(best remaining, passing candidate: {best_candidate})."
+            )
 
         if best_candidate_eval["net_score"] <= current_eval["net_score"]:
             lookahead_path = None
@@ -619,6 +779,7 @@ def select_island_by_sensitivity(
                     G, island, current_eval, best_candidate, best_candidate_eval,
                     risk_weights, gic_ctx, baseline_gnd_df, exposure, eligible_nodes,
                     switching_cost_weight, redistribution_cost_weight, max_size, lookahead_steps,
+                    fragility_draws=fragility_draws, require_real_storm_filter=require_real_storm_filter,
                 )
 
             if lookahead_path is None:
@@ -687,8 +848,11 @@ def select_island_by_sensitivity(
         "voltage_weighted_cost": current_eval["switching_cost"],
         "redistribution_cost": current_eval["redistribution_cost"],
         "per_storm": current_eval["per_storm"],
-        "total_protected_risk_weight": current_eval["benefit"],
+        "worst_case_total_effect": current_eval["worst_case_total_effect"],
+        "worst_case_storm_benefit": current_eval["benefit"],
         "net_score": current_eval["net_score"],
+        "seed_passed_real_storm_filter": seed_passed_filter,
+        "final_island_passes_real_storm_filter": current_eval["passes_real_storm_filter"],
         "hit_size_cap": hit_cap,
         "stop_reason": stop_reason,
         "rejected_candidate": rejected_candidate,
@@ -708,6 +872,8 @@ def main(
     lookahead_steps: int = LOOKAHEAD_STEPS,
     n_betweenness_candidates: int = N_BETWEENNESS_CANDIDATES,
     cfb_solver: str = CFB_SOLVER,
+    fragility_draws: int = SEARCH_FRAGILITY_DRAWS,
+    require_real_storm_filter: bool = True,
 ):
     G = load_graph()
     attach_conductance(G)
@@ -734,7 +900,8 @@ def main(
         n_seed_candidates=n_seed_candidates, switching_cost_weight=switching_cost_weight,
         redistribution_cost_weight=redistribution_cost_weight, min_lines=min_lines,
         lookahead_steps=lookahead_steps, n_betweenness_candidates=n_betweenness_candidates,
-        cfb_solver=cfb_solver,
+        cfb_solver=cfb_solver, fragility_draws=fragility_draws,
+        require_real_storm_filter=require_real_storm_filter,
     )
 
     out_path = VA_NETWORK_DIR / f"va_island_{island_id}.json"
@@ -746,8 +913,11 @@ def main(
         f"Island {island_id}: seed={island['seed']}, {island['member_count']} members, "
         f"{island['boundary_line_count']} boundary lines cut (voltage-weighted cost "
         f"{island['voltage_weighted_cost']:.2f}). net_score={island['net_score']:.4f} "
-        f"(benefit={island['total_protected_risk_weight']:.4f}, "
+        f"(worst_case_storm_benefit={island['worst_case_storm_benefit']:.4f}, "
+        f"worst_case_total_effect={island['worst_case_total_effect']:.4f}, "
         f"worst-case redistribution_cost={island['redistribution_cost']:.4f}). "
+        f"PHASE 6i: seed passed real-storm filter={island['seed_passed_real_storm_filter']}, "
+        f"final island passes real-storm filter={island['final_island_passes_real_storm_filter']}. "
         f"Growth stopped: {island['stop_reason']}"
         + (
             f" (best rejected candidate: {island['rejected_candidate']['candidate']}, would-be "
@@ -760,6 +930,14 @@ def main(
         "Per-storm fragility-weighted redistribution_cost_real at final island "
         "(expected GDP-affected units, positive = worse): "
         + ", ".join(f"{p}={v['redistribution_cost_real']:+.6f}" for p, v in island["per_storm"].items())
+    )
+    logger.info(
+        "PHASE 6i per-storm TOTAL effect (own_effect + redistribution_cost_real -- the quantity the "
+        "hard filter and net_score are actually based on now, positive = worse for whole Virginia): "
+        + ", ".join(
+            f"{p}={v['own_effect'] + v['redistribution_cost_real']:+.6f}"
+            for p, v in island["per_storm"].items()
+        )
     )
     logger.info("Growth trace:\n" + "\n".join(
         f"  step {t['step']}: added {t['added']} -- {t['reason']} "
@@ -828,11 +1006,28 @@ if __name__ == "__main__":
              "'lu' (default) is the same choice this file's original, now-retired current-flow-"
              "betweenness-based scoring used.",
     )
+    parser.add_argument(
+        "--fragility-draws", type=int, default=SEARCH_FRAGILITY_DRAWS,
+        help="Phase 6i: Monte Carlo draw count for evaluate_cut()'s per-candidate fragility calls "
+             "(real_storm_gic.py's CHEAP_FRAGILITY_DRAWS, default 300, is tuned for cheap in-loop "
+             "scoring; the hard real-storm filter below needs less noise to be trustworthy, so this "
+             "file's own default is higher). Must stay under 5000 to keep _simulate_scenario's "
+             "early-stop convergence check inert (see real_storm_gic.py). Higher = less noise, more "
+             "per-candidate wall-clock time.",
+    )
+    parser.add_argument(
+        "--no-real-storm-filter", action="store_true",
+        help="Disable the Phase 6i hard filter (reproduces pre-Phase-6i behavior: net_score alone "
+             "decides, a candidate that fails a real storm can still be selected if its net_score "
+             "is merely the least-bad available). Default: filter ON -- a candidate that makes any "
+             "of gannon/halloween/st_patricks worse for whole Virginia is never added, seed or growth.",
+    )
     args = parser.parse_args()
     main(
         island_id=args.island, exclude_island_ids=args.exclude, max_size=args.max_size,
         n_seed_candidates=args.n_seed_candidates, switching_cost_weight=args.switching_cost_weight,
         redistribution_cost_weight=args.redistribution_cost_weight, min_lines=args.min_lines,
         lookahead_steps=args.lookahead_steps, n_betweenness_candidates=args.n_betweenness_candidates,
-        cfb_solver=args.cfb_solver,
+        cfb_solver=args.cfb_solver, fragility_draws=args.fragility_draws,
+        require_real_storm_filter=not args.no_real_storm_filter,
     )

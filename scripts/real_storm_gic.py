@@ -185,14 +185,20 @@ def load_fragility_exposure() -> pd.DataFrame:
 # convergence checking from draw 5000) -- this needs to run twice per real
 # storm per candidate (before/after), on top of the admittance solve
 # that's already the dominant cost, so it deliberately trades precision
-# for speed. Both equal to CHEAP_FRAGILITY_DRAWS so _simulate_scenario's
-# while loop runs exactly one batch and returns -- its convergence check
-# only triggers at i>=5000, never reached here, so `tol` is inert at this
-# draw count and any value works.
+# for speed. Default `draws` value; both max_iter and batch are set equal
+# to whatever `draws` a caller passes, so _simulate_scenario's while loop
+# runs exactly one batch and returns -- its convergence check only
+# triggers at i>=5000, never reached as long as `draws` stays below that,
+# so `tol` stays inert. Callers needing less Monte Carlo noise (e.g. the
+# Phase 6i hard real-storm filter in select_island_by_redistribution_
+# sensitivity.py) can pass a higher `draws`, but should keep it under
+# 5000 to preserve this one-batch-and-return property.
 CHEAP_FRAGILITY_DRAWS = 300
 
 
-def fragility_weighted_per_substation(gic_by_sub: pd.Series, exposure: pd.DataFrame) -> pd.DataFrame:
+def fragility_weighted_per_substation(
+    gic_by_sub: pd.Series, exposure: pd.DataFrame, draws: int = CHEAP_FRAGILITY_DRAWS,
+) -> pd.DataFrame:
     """Runs econ/preprocess/p_gic_files.py's OWN fragility function
     (_simulate_scenario/one_draw_vec -- the exact lognormal Pf = Phi((ln
     Cpen + ln|GIC| - ln theta)/beta) model the real econ pipeline uses,
@@ -219,7 +225,7 @@ def fragility_weighted_per_substation(gic_by_sub: pd.Series, exposure: pd.DataFr
     config = get_simulation_config()
     _, res, tbl = pgf._simulate_scenario(
         "_gic_val", merged, theta0=config["theta0"], tol=config["tolerance"],
-        max_iter=CHEAP_FRAGILITY_DRAWS, batch=CHEAP_FRAGILITY_DRAWS,
+        max_iter=draws, batch=draws,
     )
     if tbl is None:
         return pd.DataFrame(columns=["sub_id", "expected_gdp_affected"])
@@ -232,7 +238,7 @@ def fragility_weighted_per_substation(gic_by_sub: pd.Series, exposure: pd.DataFr
 
 def fragility_weighted_redistribution(
     baseline_df: pd.DataFrame, candidate_df: pd.DataFrame, members: set, exposure: pd.DataFrame,
-    storms: list = REAL_HISTORICAL_STORMS,
+    storms: list = REAL_HISTORICAL_STORMS, draws: int = CHEAP_FRAGILITY_DRAWS,
 ) -> dict:
     """Fragility-weighted analog of real_storm_redistribution() above --
     same own_effect/redistribution_cost_real shape, but instead of a raw
@@ -245,9 +251,13 @@ def fragility_weighted_redistribution(
     negative real $/day -- is the demonstrated case motivating this).
 
     Two fragility-model calls per storm (before, after) rather than one
-    real_storm_redistribution-style comparison -- each cheap
-    (CHEAP_FRAGILITY_DRAWS draws) relative to the admittance solve that
-    produced baseline_df/candidate_df in the first place."""
+    real_storm_redistribution-style comparison -- each cheap (`draws`,
+    default CHEAP_FRAGILITY_DRAWS) relative to the admittance solve that
+    produced baseline_df/candidate_df in the first place. select_island_
+    by_redistribution_sensitivity.py's Phase 6i hard real-storm filter
+    passes a higher `draws` than the default to tighten this
+    approximation's Monte Carlo noise, since that filter's whole purpose
+    is to be trustworthy enough to hard-reject candidates on."""
     per_storm = {}
     for period in storms:
         before_col, after_col = f"GIC_{period}", f"GIC_{period}"
@@ -257,8 +267,8 @@ def fragility_weighted_redistribution(
         before_gic = baseline_df.set_index("Substation")[before_col]
         after_gic = candidate_df.set_index("Substation")[after_col]
 
-        before_tbl = fragility_weighted_per_substation(before_gic, exposure)
-        after_tbl = fragility_weighted_per_substation(after_gic, exposure)
+        before_tbl = fragility_weighted_per_substation(before_gic, exposure, draws=draws)
+        after_tbl = fragility_weighted_per_substation(after_gic, exposure, draws=draws)
         merged = before_tbl.merge(after_tbl, on="sub_id", how="outer", suffixes=("_before", "_after")).fillna(0.0)
 
         is_member = merged["sub_id"].isin(members)
