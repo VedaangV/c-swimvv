@@ -1156,56 +1156,59 @@ def create_custom_colorbar_e_field(
     cb = plt.colorbar(obj, cax=cax, label=label, orientation="vertical")
     cb.ax.set_ylabel(title, rotation=90, labelpad=4, fontsize=8)
 
-    custom_ticks = [1, 10, vmax]
-    if (
-        np.isfinite(current_max)
-        and current_max != vmax
-        and current_max not in custom_ticks
-    ):
-        custom_ticks.append(current_max)
-    custom_ticks = sorted(set(custom_ticks))
-
-    # Merge ticks that would render too close together to stay legible on
-    # this log-scaled colorbar. `vmax` is the same GLOBAL max shared by
-    # every panel in the figure, while `current_max` is this panel's own
-    # peak -- when a panel's own peak lands close to the global max (a
-    # real observed case: Virginia's 250-year panel's own peak ~16 V/km
-    # sitting right next to a global vmax of ~16), both ticks get added
-    # and collide visually near the top of the bar even though the
-    # underlying values are meaningfully different in absolute terms.
-    # Threshold is a FRACTION of the colorbar's total log range (not a
-    # fixed value gap), so it adapts whether the panel spans 1 decade or
-    # 4. When two ticks merge, keep whichever is current_max so the red/
-    # starred annotation always lands on the real per-panel peak value.
-    finite_vmin = max(float(vmin), 1e-12) if np.isfinite(vmin) and vmin > 0 else 1e-12
-    finite_vmax = max(float(vmax), finite_vmin * 10)
-    total_log_range = np.log10(finite_vmax) - np.log10(finite_vmin)
-    min_log_gap = max(0.08 * total_log_range, 0.05) if total_log_range > 0 else 0.06
-
-    merged_ticks = []
-    for t in custom_ticks:
-        if (
-            merged_ticks and t > 0 and merged_ticks[-1] > 0
-            and (np.log10(t) - np.log10(merged_ticks[-1])) < min_log_gap
-        ):
-            if np.isfinite(current_max) and np.isclose(t, current_max):
-                merged_ticks[-1] = t
-            continue
-        merged_ticks.append(t)
-    custom_ticks = merged_ticks
-    cb.set_ticks(custom_ticks)
+    # Fixed reference ticks -- ALWAYS the same three values (1, 10, the
+    # GLOBAL vmax shared by every panel in the figure) on every panel,
+    # regardless of that panel's own peak. This is what makes the color
+    # scale visibly comparable across panels: an earlier revision instead
+    # substituted/dropped the shared vmax tick whenever a panel's own peak
+    # landed close to it (to avoid the two colliding), which fixed the
+    # overlap but made every panel's colorbar look independently scaled
+    # (different top number per row) even though the underlying color
+    # mapping (norm bounds) was identical all along -- exactly backwards
+    # for a multi-panel figure whose whole point is cross-panel comparison.
+    fixed_ticks = sorted({1, 10, vmax})
+    cb.set_ticks(fixed_ticks)
 
     def _fmt(x):
         return f"{x:.2e}" if x < 0.01 else f"{x:.0f}"
 
-    labels = [_fmt(t) for t in custom_ticks]
-    for i, t in enumerate(custom_ticks):
-        if np.isfinite(current_max) and np.isclose(t, current_max):
-            labels[i] += "*"
+    labels = [_fmt(t) for t in fixed_ticks]
+
+    # This panel's own real peak (current_max) is reported separately from
+    # the fixed ticks, so it never has to compete with one for space:
+    # - if it's (numerically, not just visually-close) EQUAL to the shared
+    #   vmax -- this panel is the one that actually sets the global max --
+    #   just mark that existing tick red/starred instead of drawing a
+    #   second annotation on top of it. Deliberately a tight equality
+    #   check, not a "close enough to maybe collide" one: an earlier
+    #   revision used a loose log-distance threshold here and would have
+    #   mislabeled a real peak of 14 as "16*" just because it was within
+    #   ~12% of a global vmax of ~16 -- wrong, not just imprecise, since
+    #   this branch substitutes the DISPLAYED value, not just its position.
+    # - otherwise, draw it as its own red line + label at the correct
+    #   height on the bar, independent of the fixed-tick positions -- safe
+    #   to do even when current_max sits close to vmax, since this label
+    #   is horizontally offset from the tick labels rather than sharing
+    #   their slot.
+    close_to_vmax = (
+        np.isfinite(current_max) and current_max > 0 and vmax > 0
+        and np.isclose(current_max, vmax)
+    )
+    if close_to_vmax:
+        vmax_idx = fixed_ticks.index(vmax)
+        labels[vmax_idx] += "*"
+
     cb.set_ticklabels(labels)
-    for lbl, t in zip(cb.ax.get_yticklabels(), custom_ticks):
-        if np.isfinite(current_max) and np.isclose(t, current_max):
-            lbl.set_color("red")
+    if close_to_vmax:
+        for lbl, t in zip(cb.ax.get_yticklabels(), fixed_ticks):
+            if np.isclose(t, vmax):
+                lbl.set_color("red")
+    elif np.isfinite(current_max):
+        cb.ax.axhline(current_max, color="red", linewidth=1.3, clip_on=False)
+        cb.ax.text(
+            1.6, current_max, f"{_fmt(current_max)}*", transform=cb.ax.get_yaxis_transform(),
+            color="red", fontsize=8, va="center", ha="left", clip_on=False,
+        )
     cb.ax.minorticks_off()
 
     return cb

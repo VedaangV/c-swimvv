@@ -108,13 +108,24 @@ def generate_virginia_grid_and_mask(
     resolution: tuple = (500, 500),
     pad_deg: float = 0.3,
     filename="grid.pkl",
+    method: str = "cubic",
 ):
     """Virginia-scoped fork of viz/plot_utils.py's generate_grid_and_mask()
     -- see module docstring point 1. Interpolates from the full MT-site
     point set (mt_coordinates/e_field_values span Virginia+PJM, which
     helps accuracy near Virginia's own borders) but only grids and masks
     the area around `boundary_polygon`'s own bounding box, not the whole
-    site footprint."""
+    site footprint.
+
+    method="cubic" (Clough-Tocher, scipy.interpolate.griddata) rather than
+    the national version's "linear" -- linear interpolation over a sparse,
+    irregular MT-site point set produces visible flat-shaded triangular
+    facets (the underlying Delaunay triangulation showing through),
+    especially over Virginia's smaller/sparser site footprint than CONUS.
+    Cubic can overshoot near sharp gradients, including into small
+    negative values, which isn't physical for a field/voltage MAGNITUDE
+    -- clipped to 0 below. Pass method="linear" to reproduce the original,
+    faceted-but-overshoot-free behavior if preferred."""
     if mt_coordinates.shape[0] != e_field_values.shape[0]:
         logger.warning("Number of MT-site points and E-field values don't match.")
 
@@ -132,8 +143,10 @@ def generate_virginia_grid_and_mask(
     ).reshape(grid_x.shape)
 
     grid_z = griddata(
-        mt_coordinates[:, [1, 0]], e_field_values, (grid_x, grid_y), method="linear"
+        mt_coordinates[:, [1, 0]], e_field_values, (grid_x, grid_y), method=method
     )
+    if method != "linear":
+        grid_z = np.clip(grid_z, 0, None)
     grid_z = np.ma.array(grid_z, mask=~mask)
 
     with open(filename, "wb") as f:
@@ -186,7 +199,15 @@ def main():
 
     projection = ccrs.LambertConformal(central_longitude=-78.5, central_latitude=37.5)
     fig = plt.figure(figsize=(8.5, 10.5), dpi=300)
-    gs = gridspec.GridSpec(4, 2, figure=fig, wspace=0.2, hspace=0.2)
+    # wspace wider than a typical 2-column grid: the E-field colorbar
+    # (column 0's right edge) sits BETWEEN the two map columns, not at an
+    # outer figure edge like the voltage colorbar does -- too little gap
+    # here lets its "E Field (V/km)" ylabel get overdrawn by column 1's
+    # own opaque map background (added to the figure afterward, in the
+    # same row), which is why that label was going missing while the
+    # voltage side's identical label (at the unconstrained right edge)
+    # rendered fine.
+    gs = gridspec.GridSpec(4, 2, figure=fig, wspace=0.45, hspace=0.2)
 
     num = 0
     for i, period in enumerate(["gannon"] + RETURN_PERIODS_TO_PLOT):
