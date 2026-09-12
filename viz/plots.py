@@ -1167,11 +1167,30 @@ def create_custom_colorbar_e_field(
     # mapping (norm bounds) was identical all along -- exactly backwards
     # for a multi-panel figure whose whole point is cross-panel comparison.
     fixed_ticks = sorted({1, 10, vmax})
-    cb.set_ticks(fixed_ticks)
 
     def _fmt(x):
         return f"{x:.2e}" if x < 0.01 else f"{x:.0f}"
 
+    # Drop the "10" reference tick specifically when THIS panel's own peak
+    # would land too close to it to render both labels legibly -- 1 and
+    # vmax are always kept (they're the scale's anchors, and what actually
+    # makes cross-panel comparison possible); "10" is a helpful middle
+    # waypoint shown only when there's room. Needed for a real observed
+    # case: Virginia's real peaks cluster at 12-16 (all within one decade
+    # of vmax), unlike the wider spread the reference national data had,
+    # so current_max consistently landed within ~15% of "10" on this
+    # log-scaled bar -- close enough that horizontal offset alone (the
+    # current_max marker below) wasn't enough separation. This can make
+    # the exact tick SET differ slightly panel to panel (whichever ones
+    # happen to have a peak far enough from 10 keep it, others don't) --
+    # a minor, explainable trade-off against the alternative of two
+    # overlapping illegible labels.
+    if 10 in fixed_ticks and np.isfinite(current_max) and current_max > 0 and not np.isclose(current_max, 10):
+        log_span = np.log10(vmax) - np.log10(1) if vmax > 1 else 1.0
+        if abs(np.log10(current_max) - np.log10(10)) < max(0.15 * log_span, 0.10):
+            fixed_ticks = [t for t in fixed_ticks if t != 10]
+
+    cb.set_ticks(fixed_ticks)
     labels = [_fmt(t) for t in fixed_ticks]
 
     # This panel's own real peak (current_max) is reported separately from
