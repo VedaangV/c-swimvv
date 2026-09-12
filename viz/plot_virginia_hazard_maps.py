@@ -222,10 +222,11 @@ def main():
         num += 1
 
     plt.tight_layout()
-    out_path = VA_FIGURES_DIR / "va_hazard_maps"
-    fig.savefig(f"{out_path}.png", dpi=300, bbox_inches="tight")
-    fig.savefig(f"{out_path}.pdf", dpi=300, bbox_inches="tight")
-    logger.info(f"Saved {out_path}.png and .pdf")
+    out_png = VA_FIGURES_DIR / "va_hazard_maps.png"
+    out_pdf = VA_FIGURES_DIR / "va_hazard_maps.pdf"
+    fig.savefig(out_png, dpi=300, bbox_inches="tight")
+    fig.savefig(out_pdf, dpi=300, bbox_inches="tight")
+    logger.info(f"Saved {out_png} and {out_pdf}")
 
 
 if __name__ == "__main__":
