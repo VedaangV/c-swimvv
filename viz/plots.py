@@ -290,7 +290,7 @@ def plot_vuln_trafos(vuln_data, df_lines, file_suffix=""):
 
     p_bins = [0, 10, 20, 40, 50, 75, 101]
     p_labels = ["<10%", "10–20%", "20–40%", "40–50%", "50–75%", ">75%"]
-    cmap = plt.cm.get_cmap("YlOrRd", 5)
+    cmap = mpl.colormaps["YlOrRd"].resampled(5)
 
     p_colors = ["#9ca3af"] + [cmap(i) for i in range(5)]
 
@@ -1039,7 +1039,7 @@ def create_tl_sub_visualization(gdf_sub, tl_df):
 
 def _trimmed_cmap(cmap_name="viridis", cut_low=0.1):
     """Create a trimmed colormap to avoid near-black colors at low end."""
-    base = mpl.cm.get_cmap(cmap_name)
+    base = mpl.colormaps[cmap_name]
     return mpl.colors.LinearSegmentedColormap.from_list(
         "Ebar", base(np.linspace(cut_low, 1.0, 256))
     )
@@ -1068,7 +1068,7 @@ def plot_transmission_lines(
     vmin_unsat = max(10.0, float(min_value), 0.0)
     vmax_unsat = max(1000.0, float(max_value))
 
-    base = mpl.cm.get_cmap(cmap)
+    base = mpl.colormaps[cmap]
     cmap_trim = mpl.colors.LinearSegmentedColormap.from_list(
         f"{cmap}_trimmed", base(np.linspace(0.15, 1.0, 256))
     )
@@ -2147,7 +2147,7 @@ def create_ratio_hazard_maps(
         norm_v = mpl.colors.TwoSlopeNorm(
             vmin=vmin_v_ratio, vcenter=1.0, vmax=vmax_v_ratio
         )
-        cmap_v = plt.get_cmap("RdBu_r")
+        cmap_v = mpl.colormaps["RdBu_r"]
 
         line_segments = []
         line_colors = []
@@ -2417,7 +2417,7 @@ def create_event_ratio_maps(
         norm_v = mpl.colors.TwoSlopeNorm(
             vmin=vmin_v_ratio, vcenter=1.0, vmax=vmax_v_ratio
         )
-        cmap_v = plt.get_cmap("RdBu_r")
+        cmap_v = mpl.colormaps["RdBu_r"]
 
         line_segments = []
         line_colors = []
@@ -2494,7 +2494,7 @@ def plot_gnd_gic_panels(ds, df_substations, file_suffix=""):
 
     bin_edges = np.array([0, 20, 40, 60, 80, 100, 200, 400], dtype=float)
     bin_labels = ["<20", "20–40", "40–60", "60–80", "80–100", "100–200", "200–400"]
-    cmap_base = plt.cm.get_cmap("YlOrRd", 6)
+    cmap_base = mpl.colormaps["YlOrRd"].resampled(6)
     ylorrd6 = [cmap_base(i) for i in range(6)]
     colors_list = ["#9ca3af"] + ylorrd6
     cmap_disc = colors.ListedColormap(colors_list)
