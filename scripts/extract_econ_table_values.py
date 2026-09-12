@@ -17,18 +17,28 @@ Reads two files scripts/run_virginia_econ_analysis.py already produces:
   scenario; this is where "population/establishments at risk" come from,
   not the IO model output.
 
-HONEST LIMITATION ON "MEAN +/- STANDARD DEVIATION": this pipeline's saved
-output only ever has mean/p5/p95, never a directly-computed sample
-standard deviation (get_confidence_intervals_unrounded() computes
-np.percentile, not np.std, and nothing downstream retains per-realization
-total_impact after the IO transform). What this script reports as "std"
-is the standard normal-distribution APPROXIMATION from a 90% CI:
-std ~= (p95 - p5) / (2 * 1.645) ~= (p95 - p5) / 3.29 -- exact only if the
-underlying distribution is genuinely normal, which a fragility-driven,
-right-skewed quantity generally is NOT (see viz/plot_virginia_winding_gic_
-ranking.py's docstring for a documented real case of that skew in this
-same pipeline). Report it as an approximation in the paper, not a
-directly-measured standard deviation, unless a true bootstrap/realization-
+HONEST LIMITATION ON "MEAN +/- ...": this pipeline's saved output only
+ever has mean/p5/p95, never a directly-computed sample standard deviation
+(get_confidence_intervals_unrounded() computes np.percentile, not
+np.std, and nothing downstream retains per-realization total_impact
+after the IO transform). What this script reports is HALF THE WIDTH OF
+THE EMPIRICAL 90% INTERVAL -- (p95 - p5) / 2 -- deliberately matching
+viz/plot_virginia_econ_impact.py's own convention (direct_err/indirect_
+err/total_err in that file), not a normal-distribution-derived estimate
+of the true standard deviation. An earlier revision of this script used
+(p95 - p5) / (2 * 1.645) instead (solving for sigma as if the 5th/95th
+percentiles sat at exactly mean +/- 1.645*sigma, the normal-distribution
+relationship) -- mechanically different from, and about 1.645x smaller
+than, what this file now computes, which is exactly why those two
+scripts' numbers disagreed for the same underlying data when compared
+side by side against a real rendered figure. Standardized on the plain
+half-CI-width here because it doesn't assert normality at all -- it's
+just literally half of the reported p5-p95 range -- whereas the 1.645
+divisor's implicit normality assumption doesn't hold for fragility-driven
+quantities that are often heavily right-skewed (see viz/plot_virginia_
+winding_gic_ranking.py's docstring for a documented real case of that
+skew in this same pipeline). Report it in the paper as "half the 90% CI
+width," not as a standard deviation, unless a true bootstrap/realization-
 level std is computed separately.
 
 Usage:
@@ -51,11 +61,6 @@ MODEL_FILES = {
     "leontief_cp": "va_leontief_consumption_production_results.csv",
 }
 
-# z-score for a 90% CI (p5-p95); std ~= (p95-p5) / (2*Z) under a normal
-# approximation -- see module docstring's HONEST LIMITATION section.
-Z_90 = 1.645
-
-
 def _match_scenario(all_scenarios, period_key: str) -> str:
     """Find the one scenario string containing `period_key` (e.g. '100'
     matches '100-year', 'gannon' matches 'gannon-year' or the raw,
@@ -74,8 +79,12 @@ def _match_scenario(all_scenarios, period_key: str) -> str:
 
 
 def econ_loss_row(io_df: pd.DataFrame, period_key: str) -> dict:
-    """Total/direct loss (mean +/- approx std, $M/day), summed over
-    sectors, for one scenario."""
+    """Total/direct loss (mean +/- half the 90% CI width, $M/day), summed
+    over sectors, for one scenario. half_ci = (p95 - p5) / 2 -- matches
+    viz/plot_virginia_econ_impact.py's own direct_err/indirect_err/
+    total_err convention exactly (see module docstring's HONEST
+    LIMITATION section for why that convention, not a normal-
+    distribution-derived std, is what this reports)."""
     scenario = _match_scenario(io_df["scenario"].unique(), period_key)
     scen_df = io_df[io_df["scenario"] == scenario]
 
@@ -85,9 +94,9 @@ def econ_loss_row(io_df: pd.DataFrame, period_key: str) -> dict:
         mean_val = by_conf.get("mean", float("nan"))
         p5_val = by_conf.get("p5", float("nan"))
         p95_val = by_conf.get("p95", float("nan"))
-        approx_std = abs(p95_val - p5_val) / (2 * Z_90)
+        half_ci_width = abs(p95_val - p5_val) / 2
         out[f"{label}_mean"] = mean_val
-        out[f"{label}_approx_std"] = approx_std
+        out[f"{label}_half_ci"] = half_ci_width
     return out
 
 
@@ -126,8 +135,8 @@ def main(model: str, periods: list):
         loss = econ_loss_row(io_df, period_key)
         risk = risk_counts_row(ci_df, period_key)
         label = "Gannon (2024)" if period_key == "gannon" else f"{period_key}-year"
-        total_str = f"{loss['total_mean']:.1f} ± {loss['total_approx_std']:.1f}"
-        direct_str = f"{loss['direct_mean']:.1f} ± {loss['direct_approx_std']:.1f}"
+        total_str = f"{loss['total_mean']:.1f} ± {loss['total_half_ci']:.1f}"
+        direct_str = f"{loss['direct_mean']:.1f} ± {loss['direct_half_ci']:.1f}"
         pop_str = f"{risk['pop_thousands']:.0f}"
         est_str = f"{risk['est_thousands']:.1f}"
         print(f"{label:<15}{total_str:<24}{direct_str:<24}{pop_str:<18}{est_str}")
@@ -138,8 +147,8 @@ def main(model: str, periods: list):
         risk = risk_counts_row(ci_df, period_key)
         label = "Gannon (2024)" if period_key == "gannon" else f"{period_key}-year"
         print(
-            f"{label} & ${loss['total_mean']:.1f} \\pm {loss['total_approx_std']:.1f}$ & "
-            f"${loss['direct_mean']:.1f} \\pm {loss['direct_approx_std']:.1f}$ & "
+            f"{label} & ${loss['total_mean']:.1f} \\pm {loss['total_half_ci']:.1f}$ & "
+            f"${loss['direct_mean']:.1f} \\pm {loss['direct_half_ci']:.1f}$ & "
             f"{risk['pop_thousands']:.0f} & {risk['est_thousands']:.1f} \\\\"
         )
 
