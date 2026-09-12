@@ -1095,6 +1095,7 @@ python scripts/run_virginia_econ_analysis.py
 python viz/plot_virginia_network.py
 python viz/plot_virginia_gic_risk.py
 python viz/plot_virginia_econ_impact.py
+python viz/plot_virginia_hazard_maps.py   # Virginia-scoped analog of the national paper's Figure 3
 
 # Islanding: select a candidate, then push it through the same shape of pipeline
 python scripts/select_island_by_redistribution_sensitivity.py --island <id> --exclude <prior ids> --min-lines 2
