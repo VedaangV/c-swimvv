@@ -1144,7 +1144,7 @@ def create_custom_colorbar_e_field(
 
     if not e_field and isinstance(getattr(obj, "norm", None), mpl.colors.LogNorm):
         cb = plt.colorbar(obj, cax=cax, label=label, orientation="vertical")
-        cb.ax.set_ylabel(title, rotation=90, labelpad=1, fontsize=8)
+        cb.ax.set_ylabel(title, rotation=90, labelpad=4, fontsize=8)
 
         ticks = [10, 100, 1000]
         labels = ["1–10", "100", r"$\geq 1000$"]
@@ -1154,7 +1154,7 @@ def create_custom_colorbar_e_field(
         return cb
 
     cb = plt.colorbar(obj, cax=cax, label=label, orientation="vertical")
-    cb.ax.set_ylabel(title, rotation=90, labelpad=1, fontsize=8)
+    cb.ax.set_ylabel(title, rotation=90, labelpad=4, fontsize=8)
 
     custom_ticks = [1, 10, vmax]
     if (
@@ -1164,6 +1164,35 @@ def create_custom_colorbar_e_field(
     ):
         custom_ticks.append(current_max)
     custom_ticks = sorted(set(custom_ticks))
+
+    # Merge ticks that would render too close together to stay legible on
+    # this log-scaled colorbar. `vmax` is the same GLOBAL max shared by
+    # every panel in the figure, while `current_max` is this panel's own
+    # peak -- when a panel's own peak lands close to the global max (a
+    # real observed case: Virginia's 250-year panel's own peak ~16 V/km
+    # sitting right next to a global vmax of ~16), both ticks get added
+    # and collide visually near the top of the bar even though the
+    # underlying values are meaningfully different in absolute terms.
+    # Threshold is a FRACTION of the colorbar's total log range (not a
+    # fixed value gap), so it adapts whether the panel spans 1 decade or
+    # 4. When two ticks merge, keep whichever is current_max so the red/
+    # starred annotation always lands on the real per-panel peak value.
+    finite_vmin = max(float(vmin), 1e-12) if np.isfinite(vmin) and vmin > 0 else 1e-12
+    finite_vmax = max(float(vmax), finite_vmin * 10)
+    total_log_range = np.log10(finite_vmax) - np.log10(finite_vmin)
+    min_log_gap = max(0.08 * total_log_range, 0.05) if total_log_range > 0 else 0.06
+
+    merged_ticks = []
+    for t in custom_ticks:
+        if (
+            merged_ticks and t > 0 and merged_ticks[-1] > 0
+            and (np.log10(t) - np.log10(merged_ticks[-1])) < min_log_gap
+        ):
+            if np.isfinite(current_max) and np.isclose(t, current_max):
+                merged_ticks[-1] = t
+            continue
+        merged_ticks.append(t)
+    custom_ticks = merged_ticks
     cb.set_ticks(custom_ticks)
 
     def _fmt(x):
