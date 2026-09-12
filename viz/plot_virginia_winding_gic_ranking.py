@@ -19,30 +19,36 @@ va_substation_names.csv -> OSM SS_NAME -> operator+voltage+coordinates ->
 "Unnamed" + coordinates) that script already built and uses for the
 ground-GIC chart. Not duplicated here.
 
-WHY THE P95 WHISKER IS OFTEN SEVERAL TIMES THE MEAN, AND WHY THAT'S REAL:
+THE P95 WHISKER IS ONE-SIDED, DELIBERATELY: p95 for a magnitude quantity
+is always >= the mean, so there's nothing meaningful to show "behind" the
+bar -- a symmetric whisker would extend left into a value BELOW the mean,
+which p95 doesn't represent. xerr=[lower_err, upper_err] with lower_err
+all zeros draws exactly that: a whisker that only ever extends forward
+from the bar's own end.
+
+WHY THE P95 WHISKER CAN BE SEVERAL TIMES THE MEAN, AND WHY THAT'S REAL:
 summarize_and_rank()'s own docstring explains winding GIC's sign flips
 with storm direction and which winding is measured, so even after ranking
 on |GIC| the underlying per-Monte-Carlo-realization distribution can be
-heavily right-skewed -- usually modest, occasionally spiking hard on a
-particular random transformer-composition draw. A p95 several times the
-mean is a real property of that skew, observed directly in this project's
-own real data, not an error. What WAS a real problem is rendering that on
-a LINEAR x-axis with a symmetric-looking error bar: a whisker several
-times the bar's own length visually dominates and reads as broken, and a
-symmetric xerr (as viz/plot_virginia_gic_risk.py's ground-GIC chart uses)
-can imply a leftward extent that goes negative and gets silently clipped.
-This script uses (a) an ASYMMETRIC error bar (lower=0, upper=p95-mean --
-there's no meaningful "below the mean" whisker for a magnitude quantity)
-and (b) a LOG-scale x-axis, which compresses the real dynamic range into
-something legible while showing the exact same underlying numbers -- no
-data is altered or hidden, only how the same two numbers are drawn.
+right-skewed -- usually modest, occasionally spiking hard on a particular
+random transformer-composition draw. A p95 several times the mean is a
+real property of that skew, not an error, though HOW skewed varies by
+scenario/top-N: --scale defaults to "linear" because the ratios observed
+in this project's real 100-year data are mild (under 3x); pass
+--scale log for a period/top-N where the ratio is much larger (the kind
+of 4-5x case that motivated log-scale on a different, more skewed chart)
+-- log compresses the dynamic range but needs LogLocator's minor ticks
+turned on (handled below) or the axis goes nearly unlabeled when the
+whole dataset sits inside one decade, which is what made an earlier
+version of this exact chart hard to read.
 
 Usage:
     python viz/plot_virginia_winding_gic_ranking.py --period 100
-    python viz/plot_virginia_winding_gic_ranking.py --period gannon --top-n 20
+    python viz/plot_virginia_winding_gic_ranking.py --period gannon --top-n 20 --scale log
 """
 
 import argparse
+import textwrap
 
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
@@ -56,6 +62,7 @@ from viz.plot_virginia_gic_risk import _load_substation_labels
 logger = setup_logger(log_file="logs/plot_virginia_winding_gic_ranking.log")
 
 TOP_N = 15
+LABEL_WRAP_WIDTH = 38
 
 
 def _find_hazard_columns(columns, period: str) -> tuple:
@@ -77,7 +84,7 @@ def _find_hazard_columns(columns, period: str) -> tuple:
     return mean_col, p95_col
 
 
-def main(period: str = "100", top_n: int = TOP_N):
+def main(period: str = "100", top_n: int = TOP_N, scale: str = "linear"):
     setup_matplotlib()
 
     summary_path = VA_ECON_DIR / "va_gic_summary.csv"
@@ -102,22 +109,41 @@ def main(period: str = "100", top_n: int = TOP_N):
     lower_err = np.zeros_like(upper_err)
 
     y = range(len(order))
-    fig, ax = plt.subplots(figsize=(11, 8))
+    fig, ax = plt.subplots(figsize=(12, 8))
 
     ax.barh(
         y, mean_vals, xerr=[lower_err, upper_err], color="#d73027", ecolor="0.2",
-        capsize=3, zorder=2,
+        capsize=3, zorder=3,
     )
-    ax.set_xscale("log")
-    ax.xaxis.set_major_formatter(mticker.ScalarFormatter())
-    ax.xaxis.set_minor_formatter(mticker.NullFormatter())
+
+    max_p95 = float(np.max(p95_vals)) if len(p95_vals) else 1.0
+    if scale == "log":
+        ax.set_xscale("log")
+        # LogLocator's default minor ticks (2,3,4,5,6,7,8,9 x each decade)
+        # with a plain-number formatter -- without this, a dataset that
+        # sits inside a single decade (e.g. 40-190) shows only ONE labeled
+        # tick ("100") on the entire axis, which is what made an earlier
+        # version of this chart hard to read.
+        ax.xaxis.set_major_formatter(mticker.ScalarFormatter())
+        ax.xaxis.set_minor_locator(mticker.LogLocator(base=10.0, subs=[2, 3, 4, 5, 6, 7, 8, 9]))
+        ax.xaxis.set_minor_formatter(mticker.ScalarFormatter())
+        ax.set_xlim(right=max_p95 * 1.6)
+    else:
+        # Linear headroom for the value-label text so it doesn't run off
+        # the right edge of the figure, worst case at the longest whisker.
+        ax.set_xlim(left=0, right=max_p95 * 1.35)
+        ax.grid(axis="x", color="0.85", linewidth=0.6, zorder=0)
 
     for yi, (mean_v, p95_v) in enumerate(zip(mean_vals, p95_vals)):
-        ax.text(max(mean_v, p95_v) * 1.08, yi, f"{mean_v:.1f} (p95 {p95_v:.1f})", va="center", fontsize=8)
+        ax.text(max(mean_v, p95_v) * 1.03, yi, f"{mean_v:.1f} (p95 {p95_v:.1f})", va="center", fontsize=8)
 
+    wrapped_labels = [
+        "\n".join(textwrap.wrap(name, LABEL_WRAP_WIDTH)) for name in order["display_name"]
+    ]
     ax.set_yticks(list(y))
-    ax.set_yticklabels(order["display_name"], fontsize=8)
-    ax.set_xlabel(f"Winding GIC, |A/ph| ({period}-year storm) — log scale, whisker = p95")
+    ax.set_yticklabels(wrapped_labels, fontsize=8)
+    scale_note = "log scale" if scale == "log" else "linear scale"
+    ax.set_xlabel(f"Winding GIC, |A/ph| ({period}-year storm) — {scale_note}, whisker = p95")
     ax.set_title(f"Top {len(top)} most vulnerable Virginia substations ({period}-year return period storm)")
 
     fig.tight_layout()
@@ -130,9 +156,15 @@ def main(period: str = "100", top_n: int = TOP_N):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Top-N Virginia substations by winding GIC for one storm period, real names, log-scale whisker."
+        description="Top-N Virginia substations by winding GIC for one storm period, real names, one-sided p95 whisker."
     )
     parser.add_argument("--period", type=str, default="100", help="Return period, e.g. '100', '250', 'gannon'.")
     parser.add_argument("--top-n", type=int, default=TOP_N)
+    parser.add_argument(
+        "--scale", type=str, default="linear", choices=["linear", "log"],
+        help="X-axis scale. 'linear' (default) reads more naturally and gives fully-labeled, evenly "
+             "spaced ticks for free -- fine for this project's observed 100-year mean-to-p95 ratios "
+             "(under 3x). Use 'log' for a period/top-N where that ratio is much larger.",
+    )
     args = parser.parse_args()
-    main(period=args.period, top_n=args.top_n)
+    main(period=args.period, top_n=args.top_n, scale=args.scale)
