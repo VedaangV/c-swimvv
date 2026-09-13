@@ -398,12 +398,68 @@ Island M needs isn't reachable by a single remove or swap from where
 growth left it, polish won't find it either, and the honest next step
 would be the bigger optimization rung already named in LIMITATIONS.
 
+Real result, Island N (polish enabled): got closer than anything before
+it -- st_patricks flipped to genuinely positive (+0.000091, though that's
+small enough to be within the fragility Monte Carlo's own noise floor,
+not a confident win) -- but gannon (-0.009885) and especially halloween
+(-0.037100) are still negative in the real, full-precision pipeline. This
+motivated two real, related observations, addressed by Phase 6k below:
+(1) halloween has been the stubborn one in EVERY real-storm-scored
+candidate this file has ever produced (H -0.031, J -0.031, L -0.037, N
+-0.037; only K, at +0.006, ever cleared it) -- too consistent to be
+chance, and a real signal that Virginia's grid responds badly to
+halloween's specific direction almost everywhere the search has looked.
+But "everywhere the search has looked" has only ever meant the top
+~10-30 substations by risk_weight/betweenness, out of Virginia's ~400+
+eligible ones -- a candidate robust to halloween's direction could exist
+outside that slice and never get the chance to be tested; nothing stops
+--n-seed-candidates from being set larger than the whole eligible pool to
+test exhaustively, at real (large) compute cost. (2) every one of H/J/K/
+L/M/N passed the Phase 6i filter's bare `<= 0` at search time (2000-4000
+draws) yet still landed with at least one real storm slightly negative
+once run through the real 20,000+-draw validating pipeline -- a candidate
+sitting at, say, -0.0005 at search time has no real margin over that
+approximation's OWN sampling noise, so which side of zero the real
+pipeline lands on is close to a coin flip. That's what Phase 6k's
+filter_margin directly targets.
+
+PHASE 6k: SAFETY MARGIN -- "<= 0" ISN'T THE SAME AS "ROBUSTLY <= 0"
+------------------------------------------------------------------------
+Fix: `evaluate_cut()` takes a `filter_margin` (default 0.0, exact
+pre-Phase-6k behavior) and changes `passes_real_storm_filter` from
+`worst_case_total_effect <= 0.0` to `worst_case_total_effect <=
+-filter_margin`. Threaded through every acceptance point in the file --
+seed selection, growth, lookahead, and polish -- so a candidate needs
+real breathing room below zero, not just the right sign, before it's ever
+allowed into the island at any stage. This doesn't change WHAT is being
+measured, only how much margin is required before trusting the
+measurement -- the same "check real output magnitudes, recalibrate"
+discipline this file's every other weight has needed; a sensible starting
+value should come from this project's own observed noise scale (e.g. how
+much a single candidate's worst_case_total_effect moves between two
+otherwise-identical fragility_draws runs), not a guessed constant.
+
+Combined with `--n-seed-candidates` set larger than the eligible pool
+(an exhaustive scan, not a new code path -- the existing seed-selection
+logic already just takes eligible_nodes sorted by risk_weight and slices
+the first N, so N >= pool size means "everyone") and a higher
+`--fragility-draws` (shrinking the gap between the search's own
+approximation and the real validating pipeline's precision), this is the
+most direct answer this file has to "make the next island actually hold
+up" -- at real, substantial extra compute cost (an exhaustive seed scan
+is roughly (eligible substation count) real admittance/GIC solves just
+for seed evaluation, on top of growth/polish's own cost), and still not
+an absolute guarantee (finite fragility_draws always retains SOME
+sampling noise) -- but a large, honest step up from hoping a bare `<= 0`
+happens to hold.
+
 Usage:
     python scripts/select_island_by_redistribution_sensitivity.py --island j
     python scripts/select_island_by_redistribution_sensitivity.py --island j --exclude a b c d e f g
     python scripts/select_island_by_redistribution_sensitivity.py --island l --n-betweenness-candidates 10
     python scripts/select_island_by_redistribution_sensitivity.py --island m
     python scripts/select_island_by_redistribution_sensitivity.py --island n --polish-iterations 5
+    python scripts/select_island_by_redistribution_sensitivity.py --island o --n-seed-candidates 500 --fragility-draws 8000 --filter-margin 0.05
 """
 
 import argparse
@@ -505,12 +561,14 @@ def evaluate_cut(
     switching_cost_weight: float = SWITCHING_COST_WEIGHT,
     redistribution_cost_weight: float = REDISTRIBUTION_COST_WEIGHT,
     fragility_draws: int = None,
+    filter_margin: float = 0.0,
 ) -> dict:
     """Score cutting `members`'s induced boundary -- see module
-    docstring's SCORING and PHASE 6i. Requires one real single-iteration
-    admittance/GIC solve (the expensive part -- see scripts/real_storm_
-    gic.py's module docstring for the cost tradeoff this implies) plus
-    two cheap fragility-model calls per real storm (before/after).
+    docstring's SCORING, PHASE 6i, and PHASE 6k. Requires one real
+    single-iteration admittance/GIC solve (the expensive part -- see
+    scripts/real_storm_gic.py's module docstring for the cost tradeoff
+    this implies) plus two cheap fragility-model calls per real storm
+    (before/after).
 
     PHASE 6i: `risk_weights` is no longer used here at all -- kept as a
     parameter only because callers (seed/growth loops) still pass it for
@@ -524,10 +582,17 @@ def evaluate_cut(
     units from the same fragility_weighted_redistribution() call, so
     summing them per storm is legitimate (no cross-unit calibration
     needed, unlike the old risk_weight-vs-redistribution_cost split).
-    `passes_real_storm_filter` is the Phase 6i hard gate: True only if
-    this candidate's worst real storm doesn't make whole-Virginia worse
-    off, at this search's own cheap-draw approximation -- callers use it
-    to refuse ever adding a candidate that fails it, seed or growth."""
+
+    PHASE 6k: `passes_real_storm_filter` now requires the worst real storm
+    to clear `filter_margin` below zero, not just be non-positive. Islands
+    H/J/K/L/M/N all passed the plain <= 0 filter at search time (2000
+    draws) yet still landed with at least one real storm slightly negative
+    once run through the full 20,000+-draw validating pipeline -- a
+    candidate sitting at say -0.0005 at search time has no real margin
+    over that approximation's own sampling noise, so it's a coin flip
+    which side of zero the real pipeline lands on. filter_margin > 0
+    requires real breathing room, not just the right sign, before a
+    candidate is ever accepted, seed or growth."""
     boundary = boundary_edges(G, members)
     boundary_line_ids = set()
     for u, v in boundary:
@@ -552,7 +617,7 @@ def evaluate_cut(
         "benefit": benefit,
         "worst_case_total_effect": worst_case_total_effect,
         "total_effect_by_storm": total_effect_by_storm,
-        "passes_real_storm_filter": worst_case_total_effect <= 0.0,
+        "passes_real_storm_filter": worst_case_total_effect <= -filter_margin,
         "redistribution_cost": redistribution_cost,
         "per_storm": per_storm,
         "switching_cost": switching_cost,
@@ -605,6 +670,7 @@ def _try_bounded_lookahead(
     lookahead_steps: int,
     fragility_draws: int = None,
     require_real_storm_filter: bool = True,
+    filter_margin: float = 0.0,
 ) -> list | None:
     """See module docstring's PHASE 6g. `first_candidate`/`first_eval` is
     the single best growth candidate at this step, already known to score
@@ -646,7 +712,7 @@ def _try_bounded_lookahead(
             ev = evaluate_cut(
                 G, trial_island | {c}, risk_weights, gic_ctx, baseline_gnd_df, exposure,
                 switching_cost_weight=switching_cost_weight, redistribution_cost_weight=redistribution_cost_weight,
-                fragility_draws=fragility_draws,
+                fragility_draws=fragility_draws, filter_margin=filter_margin,
             )
             if require_real_storm_filter and not ev["passes_real_storm_filter"]:
                 continue
@@ -688,6 +754,7 @@ def polish_island(
     fragility_draws: int,
     require_real_storm_filter: bool,
     max_iterations: int,
+    filter_margin: float = 0.0,
 ) -> tuple:
     """PHASE 6j local-search polish -- see module docstring. Growth only
     ever ADDS members, one at a time, forward; this runs AFTER growth (and
@@ -715,6 +782,7 @@ def polish_island(
                     G, trial_island, risk_weights, gic_ctx, baseline_gnd_df, exposure,
                     switching_cost_weight=switching_cost_weight,
                     redistribution_cost_weight=redistribution_cost_weight, fragility_draws=fragility_draws,
+                    filter_margin=filter_margin,
                 )
                 if require_real_storm_filter and not ev["passes_real_storm_filter"]:
                     continue
@@ -733,6 +801,7 @@ def polish_island(
                     G, trial_island, risk_weights, gic_ctx, baseline_gnd_df, exposure,
                     switching_cost_weight=switching_cost_weight,
                     redistribution_cost_weight=redistribution_cost_weight, fragility_draws=fragility_draws,
+                    filter_margin=filter_margin,
                 )
                 if require_real_storm_filter and not ev["passes_real_storm_filter"]:
                     continue
@@ -784,6 +853,7 @@ def select_island_by_sensitivity(
     fragility_draws: int = SEARCH_FRAGILITY_DRAWS,
     require_real_storm_filter: bool = True,
     polish_iterations: int = POLISH_ITERATIONS,
+    filter_margin: float = 0.0,
 ) -> dict:
     """Run the real-storm-scored greedy search once. Returns a dict with
     the same members/boundary_line_ids/seed/growth_trace shape scripts/
@@ -808,7 +878,9 @@ def select_island_by_sensitivity(
     polish_iterations controls the Phase 6j local-search polish (single-
     member remove/swap moves after growth settles) -- see module
     docstring's PHASE 6j section. 0 disables polish and returns growth's
-    result unchanged."""
+    result unchanged. filter_margin is the Phase 6k safety margin below
+    zero the hard filter requires -- see module docstring's PHASE 6k
+    section. 0.0 reproduces the pre-Phase-6k behavior (bare <= 0) exactly."""
     excluded_nodes = excluded_nodes or set()
     eligible_nodes = set(risk_weights) - excluded_nodes
     if not eligible_nodes:
@@ -858,7 +930,7 @@ def select_island_by_sensitivity(
         ev = evaluate_cut(
             G, {s}, risk_weights, gic_ctx, baseline_gnd_df, exposure,
             switching_cost_weight=switching_cost_weight, redistribution_cost_weight=redistribution_cost_weight,
-            fragility_draws=fragility_draws,
+            fragility_draws=fragility_draws, filter_margin=filter_margin,
         )
         seed_candidate_trace.append({"candidate": s, **{k: v for k, v in ev.items() if k != "boundary"}})
         all_seed_evals.append((s, ev))
@@ -872,11 +944,12 @@ def select_island_by_sensitivity(
         else:
             seed_passed_filter = False
             logger.warning(
-                f"PHASE 6i: NONE of the {len(seed_candidates)} evaluated seed candidates pass the hard "
-                "real-storm-positivity filter (worst-case total effect over gannon/halloween/st_patricks "
-                "<= 0). Falling back to the best available by net_score anyway, but the resulting island "
-                "will NOT be positive across all three real storms even at this search's own cheap-draw "
-                "approximation -- a real signal about this candidate pool, not a search bug."
+                f"PHASE 6i/6k: NONE of the {len(seed_candidates)} evaluated seed candidates pass the hard "
+                f"real-storm-positivity filter (worst-case total effect over gannon/halloween/st_patricks "
+                f"<= {-filter_margin:.6f}). Falling back to the best available by net_score anyway, but "
+                "the resulting island will NOT be positive across all three real storms (with the "
+                "required margin) even at this search's own cheap-draw approximation -- a real signal "
+                "about this candidate pool, not a search bug."
             )
 
     best_seed, best_eval = max(seed_pool_for_selection, key=lambda pair: pair[1]["net_score"])
@@ -920,7 +993,7 @@ def select_island_by_sensitivity(
             trial_eval = evaluate_cut(
                 G, island | {c}, risk_weights, gic_ctx, baseline_gnd_df, exposure,
                 switching_cost_weight=switching_cost_weight, redistribution_cost_weight=redistribution_cost_weight,
-                fragility_draws=fragility_draws,
+                fragility_draws=fragility_draws, filter_margin=filter_margin,
             )
             if require_real_storm_filter and not trial_eval["passes_real_storm_filter"]:
                 n_failed_filter += 1
@@ -953,6 +1026,7 @@ def select_island_by_sensitivity(
                     risk_weights, gic_ctx, baseline_gnd_df, exposure, eligible_nodes,
                     switching_cost_weight, redistribution_cost_weight, max_size, lookahead_steps,
                     fragility_draws=fragility_draws, require_real_storm_filter=require_real_storm_filter,
+                    filter_margin=filter_margin,
                 )
 
             if lookahead_path is None:
@@ -1016,7 +1090,7 @@ def select_island_by_sensitivity(
         island, current_eval, polish_trace = polish_island(
             G, island, current_eval, risk_weights, gic_ctx, baseline_gnd_df, exposure, eligible_nodes,
             switching_cost_weight, redistribution_cost_weight, fragility_draws, require_real_storm_filter,
-            polish_iterations,
+            polish_iterations, filter_margin=filter_margin,
         )
 
     boundary = current_eval["boundary"]
@@ -1063,6 +1137,7 @@ def main(
     fragility_draws: int = SEARCH_FRAGILITY_DRAWS,
     require_real_storm_filter: bool = True,
     polish_iterations: int = POLISH_ITERATIONS,
+    filter_margin: float = 0.0,
 ):
     G = load_graph()
     attach_conductance(G)
@@ -1091,6 +1166,7 @@ def main(
         lookahead_steps=lookahead_steps, n_betweenness_candidates=n_betweenness_candidates,
         cfb_solver=cfb_solver, fragility_draws=fragility_draws,
         require_real_storm_filter=require_real_storm_filter, polish_iterations=polish_iterations,
+        filter_margin=filter_margin,
     )
 
     out_path = VA_NETWORK_DIR / f"va_island_{island_id}.json"
@@ -1233,6 +1309,17 @@ if __name__ == "__main__":
              "island_size * boundary_fanout) real admittance/GIC solves PER iteration. Set to 0 to "
              "disable and return growth's result unchanged.",
     )
+    parser.add_argument(
+        "--filter-margin", type=float, default=0.0,
+        help="Phase 6k: require the worst real storm's total effect to clear this much below zero, "
+             "not just be non-positive, before a candidate is ever accepted (seed, growth, lookahead, "
+             "or polish). Islands H/J/K/L/M/N all passed the plain <= 0 filter at search time yet "
+             "still landed with a real storm slightly negative in the full validating pipeline -- a "
+             "candidate at e.g. -0.0005 has no real margin over the search's own Monte Carlo sampling "
+             "noise. Try something on the order of the smallest real per-storm effect you've seen "
+             "survive to the full pipeline as a starting point (recalibrate from real data, same as "
+             "every other weight in this file). 0.0 (default) reproduces pre-Phase-6k behavior exactly.",
+    )
     args = parser.parse_args()
     main(
         island_id=args.island, exclude_island_ids=args.exclude, max_size=args.max_size,
@@ -1241,4 +1328,5 @@ if __name__ == "__main__":
         lookahead_steps=args.lookahead_steps, n_betweenness_candidates=args.n_betweenness_candidates,
         cfb_solver=args.cfb_solver, fragility_draws=args.fragility_draws,
         require_real_storm_filter=not args.no_real_storm_filter, polish_iterations=args.polish_iterations,
+        filter_margin=args.filter_margin,
     )
