@@ -494,6 +494,41 @@ that fails on gannon/halloween/st_patricks. A candidate whose boundary
 cut keeps the rest of the network in one piece pays nothing extra and is
 evaluated exactly as before.
 
+PHASE 6m: MIN-MEMBERS FILTER -- ISLAND O'S SIZE WAS A SEPARATE QUESTION FROM ITS VALIDITY
+------------------------------------------------------------------------
+Island O turned out numerically valid (Phase 6l's corrected fragmentation
+check found 0 stranded substations) but is a single substation --
+raised earlier as its own open question, independent of any bug: is a
+1-substation island a large/interesting enough result for the paper?
+Nothing before this forced growth toward a larger result -- the seed/
+growth loop always just grows from whichever single seed won by
+net_score, and if every one of ITS neighbors fails the real-storm filter
+or hurts net_score, growth honestly stops at 1 with no mechanism to try
+a different seed that might grow further.
+
+Fix: `min_members` (default 1, exact old behavior -- always tries just
+the single best-net_score seed). When `min_members > 1`, the top
+`min_members_seed_attempts` seed candidates (by net_score, among
+whichever pool passed Phase 6i/6k's filter) are each grown and polished
+in full, in net_score order, stopping at the first whose final island
+reaches `min_members`. This can never force growth to add a member that
+fails the real-storm filter or hurts net_score -- it only chooses a
+DIFFERENT seed to grow from, never relaxes what growth itself is allowed
+to accept. If none of the attempted seeds reach `min_members`, the
+largest one actually grown is returned anyway (with `meets_min_members:
+False` recorded in the saved JSON) rather than failing outright -- same
+honest-fallback spirit as every other filter in this file when nothing
+in the candidate pool satisfies it.
+
+Cost, bluntly: each additional seed attempt is a FULL growth run (every
+step's boundary candidates each cost one real admittance/GIC solve, same
+as the main growth loop), not a cheap check -- `min_members_seed_attempts`
+multiplies search cost roughly linearly, on top of whatever
+`--n-seed-candidates` already spends on seed-only evaluation. Keep it
+modest (the default, 10) unless a real reason to search further has
+already shown up in a prior run's logs (e.g. several early attempts all
+stopping at 1-2 members for the same reason).
+
 Usage:
     python scripts/select_island_by_redistribution_sensitivity.py --island j
     python scripts/select_island_by_redistribution_sensitivity.py --island j --exclude a b c d e f g
@@ -501,7 +536,7 @@ Usage:
     python scripts/select_island_by_redistribution_sensitivity.py --island m
     python scripts/select_island_by_redistribution_sensitivity.py --island n --polish-iterations 5
     python scripts/select_island_by_redistribution_sensitivity.py --island o --n-seed-candidates 500 --fragility-draws 8000 --filter-margin 0.05
-    python scripts/select_island_by_redistribution_sensitivity.py --island p --n-seed-candidates 500 --fragility-draws 8000 --filter-margin 0.05
+    python scripts/select_island_by_redistribution_sensitivity.py --island p --n-seed-candidates 500 --fragility-draws 8000 --filter-margin 0.05 --min-members 5 --min-members-seed-attempts 15
 """
 
 import argparse
@@ -548,6 +583,8 @@ N_BETWEENNESS_CANDIDATES = 10
 CFB_SOLVER = "lu"
 SEARCH_FRAGILITY_DRAWS = 2000
 POLISH_ITERATIONS = 3
+MIN_MEMBERS = 1
+MIN_MEMBERS_SEED_ATTEMPTS = 10
 
 
 def load_risk_weights() -> dict:
@@ -925,138 +962,48 @@ def polish_island(
     return island, current_eval, polish_trace
 
 
-def select_island_by_sensitivity(
+def _grow_and_polish_from_seed(
     G: nx.Graph,
+    seed,
+    seed_eval: dict,
     risk_weights: dict,
     gic_ctx: dict,
     baseline_gnd_df: pd.DataFrame,
     exposure: pd.DataFrame,
-    excluded_nodes: set | None = None,
-    max_size: int = MAX_ISLAND_SIZE,
-    n_seed_candidates: int = N_SEED_CANDIDATES,
-    switching_cost_weight: float = SWITCHING_COST_WEIGHT,
-    redistribution_cost_weight: float = REDISTRIBUTION_COST_WEIGHT,
-    min_lines: int = 1,
-    lookahead_steps: int = LOOKAHEAD_STEPS,
-    n_betweenness_candidates: int = N_BETWEENNESS_CANDIDATES,
-    cfb_solver: str = CFB_SOLVER,
-    fragility_draws: int = SEARCH_FRAGILITY_DRAWS,
-    require_real_storm_filter: bool = True,
-    polish_iterations: int = POLISH_ITERATIONS,
-    filter_margin: float = 0.0,
+    eligible_nodes: set,
+    max_size: int,
+    switching_cost_weight: float,
+    redistribution_cost_weight: float,
+    lookahead_steps: int,
+    fragility_draws: int,
+    require_real_storm_filter: bool,
+    polish_iterations: int,
+    filter_margin: float,
 ) -> dict:
-    """Run the real-storm-scored greedy search once. Returns a dict with
-    the same members/boundary_line_ids/seed/growth_trace shape scripts/
-    deprecated_sci_islanding/select_virginia_island.py produced, plus the
-    net_score/benefit/redistribution_cost/switching_cost/per_storm
-    breakdown at each step.
+    """Grow one island from a single fixed seed through the growth loop,
+    Phase 6g lookahead, and Phase 6j polish -- the per-seed body
+    select_island_by_sensitivity() used to run inline for whichever
+    single seed won by net_score. Factored out so PHASE 6m's min_members
+    retry loop can call this against more than one seed candidate in
+    net_score order, stopping at the first whose grown island reaches
+    min_members, without duplicating growth/lookahead/polish logic.
 
-    min_lines restricts the SEED pool only -- see module docstring's
-    SEED CANDIDATE POOL. lookahead_steps controls the Phase 6g bounded
-    lookahead -- see module docstring's PHASE 6g section. 0 reproduces the
-    old strict one-step-stopping behavior exactly. n_betweenness_candidates
-    controls the Phase 6h betweenness-widened seed pool -- see module
-    docstring's PHASE 6h section. 0 reproduces the pre-Phase-6h behavior
-    (risk_weight-only seed pool) exactly. fragility_draws overrides
-    evaluate_cut()'s Monte Carlo draw count (see real_storm_gic.py's
-    CHEAP_FRAGILITY_DRAWS) -- None uses that module's default.
-    require_real_storm_filter is the Phase 6i hard gate -- see module
-    docstring's PHASE 6i section. True (default) means a candidate that
-    fails on any of the three real storms is NEVER added to the island,
-    seed or growth step, even if it's the "best available" by net_score;
-    False reproduces pre-Phase-6i behavior (net_score alone decides).
-    polish_iterations controls the Phase 6j local-search polish (single-
-    member remove/swap moves after growth settles) -- see module
-    docstring's PHASE 6j section. 0 disables polish and returns growth's
-    result unchanged. filter_margin is the Phase 6k safety margin below
-    zero the hard filter requires -- see module docstring's PHASE 6k
-    section. 0.0 reproduces the pre-Phase-6k behavior (bare <= 0) exactly."""
-    excluded_nodes = excluded_nodes or set()
-    eligible_nodes = set(risk_weights) - excluded_nodes
-    if not eligible_nodes:
-        raise ValueError("No eligible substations left to seed from (excluded_nodes covers everything).")
-
-    seed_pool = eligible_nodes
-    if min_lines > 1:
-        seed_pool = {n for n in eligible_nodes if node_line_count(G, n) >= min_lines}
-        if not seed_pool:
-            raise ValueError(
-                f"min_lines={min_lines}: no eligible substation has that many physical lines. "
-                "Lower --min-lines."
-            )
-        logger.info(
-            f"min_lines={min_lines}: {len(seed_pool)}/{len(eligible_nodes)} eligible substations "
-            "qualify as seed candidates."
-        )
-
-    seed_candidates = sorted(seed_pool, key=lambda n: risk_weights[n], reverse=True)[:n_seed_candidates]
-    betweenness_candidates = compute_betweenness_seed_candidates(
-        G, seed_pool, n_betweenness_candidates, solver=cfb_solver,
-    )
-    added_by_betweenness = [c for c in betweenness_candidates if c not in seed_candidates]
-    if added_by_betweenness:
-        logger.info(
-            f"Widened seed pool with {len(added_by_betweenness)} substation(s) from current-flow "
-            f"betweenness centrality not already in the top-{n_seed_candidates}-by-risk_weight pool "
-            f"(Phase 6h -- see module docstring): {added_by_betweenness}"
-        )
-        seed_candidates = seed_candidates + added_by_betweenness
-    elif n_betweenness_candidates > 0:
-        logger.info(
-            f"Top-{n_betweenness_candidates} substations by current-flow betweenness were already all "
-            f"in the top-{n_seed_candidates}-by-risk_weight pool -- no new seed candidates added."
-        )
-
-    logger.info(
-        f"Evaluating {len(seed_candidates)} seed candidates (top {n_seed_candidates} by raw risk weight"
-        f"{f' + {len(added_by_betweenness)} by current-flow betweenness' if added_by_betweenness else ''}"
-        f"{f', min_lines={min_lines}' if min_lines > 1 else ''}) by their real, worst-case-across-"
-        "real-storms redistribution effect (one single-iteration admittance/GIC solve each)..."
-    )
-
-    seed_candidate_trace = []
-    all_seed_evals = []
-    for s in seed_candidates:
-        ev = evaluate_cut(
-            G, {s}, risk_weights, gic_ctx, baseline_gnd_df, exposure,
-            switching_cost_weight=switching_cost_weight, redistribution_cost_weight=redistribution_cost_weight,
-            fragility_draws=fragility_draws, filter_margin=filter_margin,
-        )
-        seed_candidate_trace.append({"candidate": s, **{k: v for k, v in ev.items() if k != "boundary"}})
-        all_seed_evals.append((s, ev))
-
-    passing_seed_evals = [(s, ev) for s, ev in all_seed_evals if ev["passes_real_storm_filter"]]
-    seed_pool_for_selection = all_seed_evals
-    seed_passed_filter = True
-    if require_real_storm_filter:
-        if passing_seed_evals:
-            seed_pool_for_selection = passing_seed_evals
-        else:
-            seed_passed_filter = False
-            logger.warning(
-                f"PHASE 6i/6k: NONE of the {len(seed_candidates)} evaluated seed candidates pass the hard "
-                f"real-storm-positivity filter (worst-case total effect over gannon/halloween/st_patricks "
-                f"<= {-filter_margin:.6f}). Falling back to the best available by net_score anyway, but "
-                "the resulting island will NOT be positive across all three real storms (with the "
-                "required margin) even at this search's own cheap-draw approximation -- a real signal "
-                "about this candidate pool, not a search bug."
-            )
-
-    best_seed, best_eval = max(seed_pool_for_selection, key=lambda pair: pair[1]["net_score"])
-
-    if best_eval["net_score"] <= 0:
+    Returns everything about this one attempt EXCEPT the search-level
+    seed_candidate_trace/seed_passed_real_storm_filter/min_members
+    bookkeeping, which only make sense once the caller has picked which
+    attempt won -- it adds those itself."""
+    if seed_eval["net_score"] <= 0:
         logger.warning(
-            f"Best seed candidate ({best_seed})'s net_score is {best_eval['net_score']:.4f} <= 0 -- "
-            "even isolating the single best candidate doesn't beat its own worst-case redistribution + "
-            "switching cost. Selecting it anyway (still the best available among the evaluated "
-            "candidates), but this is a real signal that no single-substation cut in this candidate "
-            "pool is worth making."
+            f"Seed candidate ({seed})'s net_score is {seed_eval['net_score']:.4f} <= 0 -- even "
+            "isolating this single candidate doesn't beat its own worst-case redistribution + "
+            "switching cost. Growing from it anyway (still among the best available), but this is "
+            "a real signal that no single-substation cut in this candidate pool is worth making."
         )
 
-    island = {best_seed}
-    current_eval = best_eval
+    island = {seed}
+    current_eval = seed_eval
     trace = [{
-        "step": 0, "added": best_seed,
+        "step": 0, "added": seed,
         "reason": "seed (best net_score among top-risk candidates, measured by real worst-case-"
                   "across-real-storms redistribution effect)",
         "island_size": 1, **{k: v for k, v in current_eval.items() if k != "boundary"},
@@ -1189,7 +1136,7 @@ def select_island_by_sensitivity(
         boundary_line_ids.extend(G.edges[u, v].get("line_ids", []))
 
     return {
-        "seed": best_seed,
+        "seed": seed,
         "members": sorted(island),
         "member_count": len(island),
         "boundary_line_ids": boundary_line_ids,
@@ -1202,15 +1149,188 @@ def select_island_by_sensitivity(
         "worst_case_storm_benefit": current_eval["benefit"],
         "net_score": current_eval["net_score"],
         "pre_polish_net_score": pre_polish_net_score,
-        "seed_passed_real_storm_filter": seed_passed_filter,
         "final_island_passes_real_storm_filter": current_eval["passes_real_storm_filter"],
         "hit_size_cap": hit_cap,
         "stop_reason": stop_reason,
         "rejected_candidate": rejected_candidate,
-        "seed_candidate_trace": seed_candidate_trace,
         "growth_trace": trace,
         "polish_trace": polish_trace,
     }
+
+
+def select_island_by_sensitivity(
+    G: nx.Graph,
+    risk_weights: dict,
+    gic_ctx: dict,
+    baseline_gnd_df: pd.DataFrame,
+    exposure: pd.DataFrame,
+    excluded_nodes: set | None = None,
+    max_size: int = MAX_ISLAND_SIZE,
+    n_seed_candidates: int = N_SEED_CANDIDATES,
+    switching_cost_weight: float = SWITCHING_COST_WEIGHT,
+    redistribution_cost_weight: float = REDISTRIBUTION_COST_WEIGHT,
+    min_lines: int = 1,
+    lookahead_steps: int = LOOKAHEAD_STEPS,
+    n_betweenness_candidates: int = N_BETWEENNESS_CANDIDATES,
+    cfb_solver: str = CFB_SOLVER,
+    fragility_draws: int = SEARCH_FRAGILITY_DRAWS,
+    require_real_storm_filter: bool = True,
+    polish_iterations: int = POLISH_ITERATIONS,
+    filter_margin: float = 0.0,
+    min_members: int = MIN_MEMBERS,
+    min_members_seed_attempts: int = MIN_MEMBERS_SEED_ATTEMPTS,
+) -> dict:
+    """Run the real-storm-scored greedy search once. Returns a dict with
+    the same members/boundary_line_ids/seed/growth_trace shape scripts/
+    deprecated_sci_islanding/select_virginia_island.py produced, plus the
+    net_score/benefit/redistribution_cost/switching_cost/per_storm
+    breakdown at each step.
+
+    min_lines restricts the SEED pool only -- see module docstring's
+    SEED CANDIDATE POOL. lookahead_steps controls the Phase 6g bounded
+    lookahead -- see module docstring's PHASE 6g section. 0 reproduces the
+    old strict one-step-stopping behavior exactly. n_betweenness_candidates
+    controls the Phase 6h betweenness-widened seed pool -- see module
+    docstring's PHASE 6h section. 0 reproduces the pre-Phase-6h behavior
+    (risk_weight-only seed pool) exactly. fragility_draws overrides
+    evaluate_cut()'s Monte Carlo draw count (see real_storm_gic.py's
+    CHEAP_FRAGILITY_DRAWS) -- None uses that module's default.
+    require_real_storm_filter is the Phase 6i hard gate -- see module
+    docstring's PHASE 6i section. True (default) means a candidate that
+    fails on any of the three real storms is NEVER added to the island,
+    seed or growth step, even if it's the "best available" by net_score;
+    False reproduces pre-Phase-6i behavior (net_score alone decides).
+    polish_iterations controls the Phase 6j local-search polish (single-
+    member remove/swap moves after growth settles) -- see module
+    docstring's PHASE 6j section. 0 disables polish and returns growth's
+    result unchanged. filter_margin is the Phase 6k safety margin below
+    zero the hard filter requires -- see module docstring's PHASE 6k
+    section. 0.0 reproduces the pre-Phase-6k behavior (bare <= 0) exactly.
+    min_members/min_members_seed_attempts are the Phase 6m min-size retry
+    -- see module docstring's PHASE 6m section. min_members=1 (default)
+    reproduces pre-Phase-6m behavior exactly (only the single best-
+    net_score seed is ever grown)."""
+    excluded_nodes = excluded_nodes or set()
+    eligible_nodes = set(risk_weights) - excluded_nodes
+    if not eligible_nodes:
+        raise ValueError("No eligible substations left to seed from (excluded_nodes covers everything).")
+
+    seed_pool = eligible_nodes
+    if min_lines > 1:
+        seed_pool = {n for n in eligible_nodes if node_line_count(G, n) >= min_lines}
+        if not seed_pool:
+            raise ValueError(
+                f"min_lines={min_lines}: no eligible substation has that many physical lines. "
+                "Lower --min-lines."
+            )
+        logger.info(
+            f"min_lines={min_lines}: {len(seed_pool)}/{len(eligible_nodes)} eligible substations "
+            "qualify as seed candidates."
+        )
+
+    seed_candidates = sorted(seed_pool, key=lambda n: risk_weights[n], reverse=True)[:n_seed_candidates]
+    betweenness_candidates = compute_betweenness_seed_candidates(
+        G, seed_pool, n_betweenness_candidates, solver=cfb_solver,
+    )
+    added_by_betweenness = [c for c in betweenness_candidates if c not in seed_candidates]
+    if added_by_betweenness:
+        logger.info(
+            f"Widened seed pool with {len(added_by_betweenness)} substation(s) from current-flow "
+            f"betweenness centrality not already in the top-{n_seed_candidates}-by-risk_weight pool "
+            f"(Phase 6h -- see module docstring): {added_by_betweenness}"
+        )
+        seed_candidates = seed_candidates + added_by_betweenness
+    elif n_betweenness_candidates > 0:
+        logger.info(
+            f"Top-{n_betweenness_candidates} substations by current-flow betweenness were already all "
+            f"in the top-{n_seed_candidates}-by-risk_weight pool -- no new seed candidates added."
+        )
+
+    logger.info(
+        f"Evaluating {len(seed_candidates)} seed candidates (top {n_seed_candidates} by raw risk weight"
+        f"{f' + {len(added_by_betweenness)} by current-flow betweenness' if added_by_betweenness else ''}"
+        f"{f', min_lines={min_lines}' if min_lines > 1 else ''}) by their real, worst-case-across-"
+        "real-storms redistribution effect (one single-iteration admittance/GIC solve each)..."
+    )
+
+    seed_candidate_trace = []
+    all_seed_evals = []
+    for s in seed_candidates:
+        ev = evaluate_cut(
+            G, {s}, risk_weights, gic_ctx, baseline_gnd_df, exposure,
+            switching_cost_weight=switching_cost_weight, redistribution_cost_weight=redistribution_cost_weight,
+            fragility_draws=fragility_draws, filter_margin=filter_margin,
+        )
+        seed_candidate_trace.append({"candidate": s, **{k: v for k, v in ev.items() if k != "boundary"}})
+        all_seed_evals.append((s, ev))
+
+    passing_seed_evals = [(s, ev) for s, ev in all_seed_evals if ev["passes_real_storm_filter"]]
+    seed_pool_for_selection = all_seed_evals
+    seed_passed_filter = True
+    if require_real_storm_filter:
+        if passing_seed_evals:
+            seed_pool_for_selection = passing_seed_evals
+        else:
+            seed_passed_filter = False
+            logger.warning(
+                f"PHASE 6i/6k: NONE of the {len(seed_candidates)} evaluated seed candidates pass the hard "
+                f"real-storm-positivity filter (worst-case total effect over gannon/halloween/st_patricks "
+                f"<= {-filter_margin:.6f}). Falling back to the best available by net_score anyway, but "
+                "the resulting island will NOT be positive across all three real storms (with the "
+                "required margin) even at this search's own cheap-draw approximation -- a real signal "
+                "about this candidate pool, not a search bug."
+            )
+
+    sorted_by_net_score = sorted(seed_pool_for_selection, key=lambda pair: pair[1]["net_score"], reverse=True)
+    if min_members > 1:
+        seeds_to_try = sorted_by_net_score[:max(min_members_seed_attempts, 1)]
+        logger.info(
+            f"PHASE 6m: min_members={min_members} requested -- will grow up to {len(seeds_to_try)} seed "
+            "candidate(s) in net_score order, stopping at the first whose final island reaches "
+            f"{min_members} member(s)."
+        )
+    else:
+        seeds_to_try = sorted_by_net_score[:1]
+
+    best_result = None
+    meets_min_members = False
+    for attempt_idx, (seed, seed_eval) in enumerate(seeds_to_try):
+        result = _grow_and_polish_from_seed(
+            G, seed, seed_eval, risk_weights, gic_ctx, baseline_gnd_df, exposure, eligible_nodes,
+            max_size, switching_cost_weight, redistribution_cost_weight, lookahead_steps,
+            fragility_draws, require_real_storm_filter, polish_iterations, filter_margin,
+        )
+        if min_members > 1:
+            logger.info(
+                f"PHASE 6m attempt {attempt_idx + 1}/{len(seeds_to_try)}: seed {seed} grew to "
+                f"{result['member_count']} member(s) (min_members={min_members}, "
+                f"net_score={result['net_score']:.4f})."
+            )
+        if (
+            best_result is None
+            or result["member_count"] > best_result["member_count"]
+            or (result["member_count"] == best_result["member_count"] and result["net_score"] > best_result["net_score"])
+        ):
+            best_result = result
+        if result["member_count"] >= min_members:
+            meets_min_members = True
+            break
+
+    if min_members > 1 and not meets_min_members:
+        logger.warning(
+            f"PHASE 6m: none of the {len(seeds_to_try)} attempted seed candidates grew to at least "
+            f"min_members={min_members} (best reached {best_result['member_count']}). Returning the "
+            "largest grown island found among those attempted -- try raising "
+            "--min-members-seed-attempts to search further, or accept this smaller result. A "
+            "min_members requirement can never force growth to add a member that fails the "
+            "real-storm filter or hurts net_score, only choose a different seed to grow from."
+        )
+
+    best_result["seed_passed_real_storm_filter"] = seed_passed_filter
+    best_result["seed_candidate_trace"] = seed_candidate_trace
+    best_result["min_members_requested"] = min_members
+    best_result["meets_min_members"] = best_result["member_count"] >= min_members
+    return best_result
 
 
 def main(
@@ -1228,6 +1348,8 @@ def main(
     require_real_storm_filter: bool = True,
     polish_iterations: int = POLISH_ITERATIONS,
     filter_margin: float = 0.0,
+    min_members: int = MIN_MEMBERS,
+    min_members_seed_attempts: int = MIN_MEMBERS_SEED_ATTEMPTS,
 ):
     G = load_graph()
     attach_conductance(G)
@@ -1256,7 +1378,8 @@ def main(
         lookahead_steps=lookahead_steps, n_betweenness_candidates=n_betweenness_candidates,
         cfb_solver=cfb_solver, fragility_draws=fragility_draws,
         require_real_storm_filter=require_real_storm_filter, polish_iterations=polish_iterations,
-        filter_margin=filter_margin,
+        filter_margin=filter_margin, min_members=min_members,
+        min_members_seed_attempts=min_members_seed_attempts,
     )
 
     out_path = VA_NETWORK_DIR / f"va_island_{island_id}.json"
@@ -1273,6 +1396,7 @@ def main(
         f"worst-case redistribution_cost={island['redistribution_cost']:.4f}). "
         f"PHASE 6i: seed passed real-storm filter={island['seed_passed_real_storm_filter']}, "
         f"final island passes real-storm filter={island['final_island_passes_real_storm_filter']}. "
+        f"PHASE 6m: min_members={island['min_members_requested']}, met={island['meets_min_members']}. "
         f"Growth stopped: {island['stop_reason']}"
         + (
             f" (best rejected candidate: {island['rejected_candidate']['candidate']}, would-be "
@@ -1410,6 +1534,22 @@ if __name__ == "__main__":
              "survive to the full pipeline as a starting point (recalibrate from real data, same as "
              "every other weight in this file). 0.0 (default) reproduces pre-Phase-6k behavior exactly.",
     )
+    parser.add_argument(
+        "--min-members", type=int, default=MIN_MEMBERS,
+        help="Phase 6m: require the final island to have at least this many members. When > 1, the "
+             "top --min-members-seed-attempts seed candidates (by net_score) are each grown and "
+             "polished in full, in order, stopping at the first that reaches this size -- never by "
+             "relaxing what growth is allowed to accept, only by trying a different seed. If none of "
+             "the attempted seeds reach it, the largest one actually grown is returned anyway (see "
+             "the saved JSON's meets_min_members field). 1 (default) reproduces pre-Phase-6m behavior "
+             "exactly (only the single best-net_score seed is ever grown).",
+    )
+    parser.add_argument(
+        "--min-members-seed-attempts", type=int, default=MIN_MEMBERS_SEED_ATTEMPTS,
+        help="Phase 6m: how many top-net_score seed candidates to try growing (in order) when "
+             "--min-members > 1. Each attempt is a FULL growth run, not a cheap check -- this "
+             "multiplies search cost roughly linearly. Ignored when --min-members <= 1.",
+    )
     args = parser.parse_args()
     main(
         island_id=args.island, exclude_island_ids=args.exclude, max_size=args.max_size,
@@ -1418,5 +1558,6 @@ if __name__ == "__main__":
         lookahead_steps=args.lookahead_steps, n_betweenness_candidates=args.n_betweenness_candidates,
         cfb_solver=args.cfb_solver, fragility_draws=args.fragility_draws,
         require_real_storm_filter=not args.no_real_storm_filter, polish_iterations=args.polish_iterations,
-        filter_margin=args.filter_margin,
+        filter_margin=args.filter_margin, min_members=args.min_members,
+        min_members_seed_attempts=args.min_members_seed_attempts,
     )
