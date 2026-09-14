@@ -639,19 +639,38 @@ def evaluate_cut(
     PHASE 6l: before doing any of that -- checked first because it's
     cheap and disqualifying -- reject outright if cutting this boundary
     would fragment the OUTSIDE network (see module docstring's PHASE 6l).
-    `G.subgraph(set(G.nodes) - members)`'s component count is exactly
-    check_island_connectivity()'s `non_island_components` count: removing
-    `members` as vertices drops every edge with an endpoint in members,
-    which is exactly the boundary set by definition, so this needs no
-    graph copy or edge removal to answer the same question cheaply,
-    before paying for a real admittance/GIC solve on a candidate that's
-    going to be discarded anyway."""
+
+    CORRECTED after Island P's search run showed literally every one of
+    402 seed candidates disqualified: this graph is NOT one connected
+    component at baseline -- compute_betweenness_seed_candidates() has
+    always logged "49 components ... 148 nodes in smaller components
+    dropped" for this exact G, entirely independent of any candidate.
+    Naively checking `G.subgraph(all nodes - members)`'s component count
+    against a flat "> 1" threshold is always true because of those ~48
+    pre-existing baseline orphan components, regardless of what gets cut
+    -- it can never tell a real cut vertex from ordinary background noise
+    already in the topology. The fix restricts the check to `members`'
+    OWN baseline-connected component (nx.node_connected_component(G,
+    <any member>) -- valid because `members` is already required to be
+    internally connected, so every member sits in the same baseline
+    component): only asking "does removing `members` from the single
+    connected region they actually belong to split THAT region apart,"
+    never touching the ~48 components that were already separate from
+    `members` before any cut and have nothing to do with this candidate.
+    check_island_connectivity() (run_virginia_islanded_gic.py) has this
+    identical pre-existing bug for the same reason and needs the same
+    fix -- every outside_fragmented/stranded_substations count logged for
+    islands G through O is inflated by this same ~48-component baseline
+    contamination and should not be taken as an exact figure until
+    re-run with the corrected logic."""
     boundary = boundary_edges(G, members)
     boundary_line_ids = set()
     for u, v in boundary:
         boundary_line_ids.update(str(x) for x in G.edges[u, v].get("line_ids", []))
 
-    outside_components = nx.number_connected_components(G.subgraph(set(G.nodes) - members))
+    home_component = nx.node_connected_component(G, next(iter(members)))
+    outside_within_home = home_component - members
+    outside_components = nx.number_connected_components(G.subgraph(outside_within_home)) if outside_within_home else 1
     if outside_components > 1:
         return {
             "boundary": boundary,

@@ -130,7 +130,27 @@ def check_island_connectivity(
     groups_that_are_own_component = sum(1 for group in component_groups if group in cut_components)
     island_is_own_component = groups_that_are_own_component == len(component_groups)
 
-    non_island_components = [c for c in cut_components if c.isdisjoint(members)]
+    # CORRECTED: this graph is NOT one connected component at baseline --
+    # compute_betweenness_seed_candidates() has always logged "49
+    # components ... 148 nodes in smaller components dropped" for this
+    # exact G, entirely independent of any island. A naive `c.isdisjoint(
+    # members)` filter over ALL of cut_components counts every one of
+    # those ~48 pre-existing baseline orphan components too, since they
+    # were already separate from `members` before any boundary edge was
+    # touched and stay that way regardless -- inflating outside_fragmented
+    # / stranded_substations for every island ever run here, not just the
+    # ones that actually cut a structurally significant node. Every
+    # boundary edge only ever exists between `members` and their direct
+    # neighbors, which by definition sit in the same baseline connected
+    # component as `members` -- so restricting to components that are
+    # actually subsets of that baseline region (home_components) excludes
+    # the unrelated pre-existing orphans and leaves only genuinely new
+    # fragments this specific cut created.
+    home_components = set()
+    for group in component_groups:
+        if group:
+            home_components |= nx.node_connected_component(G, next(iter(group)))
+    non_island_components = [c for c in cut_components if c.isdisjoint(members) and c <= home_components]
     outside_fragmented = len(non_island_components) > 1
     stranded_substations = []
     if outside_fragmented:
