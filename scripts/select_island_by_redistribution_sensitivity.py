@@ -453,6 +453,47 @@ an absolute guarantee (finite fragility_draws always retains SOME
 sampling noise) -- but a large, honest step up from hoping a bare `<= 0`
 happens to hold.
 
+PHASE 6l: HARD FRAGMENTATION GATE -- A CUT VERTEX IS NOT AN ISLAND
+------------------------------------------------------------------------
+Island O (the first fully 3/3-and-12/12-positive real result, found by
+Phase 6k's exhaustive-seed-search + safety-margin combination) turned out
+to be a single substation with 4 boundary lines whose cut split the REST
+of the network into 149 components -- 148 substations outside the
+"island" lost their only path to the rest of PJM through it. Nothing in
+evaluate_cut()'s objective ever penalized this: `benefit` only ever
+measured the worst-case-across-real-storms fragility effect, and
+`switching_cost` only counts boundary lines, so a substation that happens
+to be a graph cut vertex (topologically load-bearing for everyone else,
+not just electrically significant for itself) was free to look like an
+excellent, nearly-costless candidate -- tiny own-outage cost (1
+substation's GDP), tiny switching cost (4 lines), while its real-storm
+benefit is large precisely because it sits on enough current-carrying
+paths to matter. That's a search reward, not a real islanding strategy:
+no utility disconnects one substation knowing it stops 148 others from
+reaching the grid. run_virginia_islanded_gic.py's check_island_
+connectivity() already computed exactly this (`outside_fragmented`,
+`stranded_substations`) -- but only as a post-hoc diagnostic run AFTER
+selection, with nothing feeding it back into the search itself.
+
+Fix: `evaluate_cut()` now checks fragmentation FIRST, before the
+expensive admittance/GIC solve -- `G.subgraph(set(G.nodes) - members)`'s
+connected-component count is exactly the same quantity check_island_
+connectivity() computes as `non_island_components` (removing members as
+vertices drops every boundary edge implicitly, since a boundary edge by
+definition has exactly one endpoint in members -- no need to copy G or
+touch edges at all), just cheap graph structure with no solve required.
+More than one component means cutting this candidate's boundary would
+strand something outside it; such a candidate now hard-fails
+`passes_real_storm_filter` immediately (`worst_case_total_effect` and
+`benefit` set to +inf/-inf sentinels -- sanitize_for_json() already
+turns these into null on save, the same handling this file already
+relies on for benefit_cost_ratio=inf) and is never scored, seed, growth,
+lookahead, or polish alike, at any real-storm-filter-requiring call site
+-- the exact same hard-gate treatment Phase 6i already gives a candidate
+that fails on gannon/halloween/st_patricks. A candidate whose boundary
+cut keeps the rest of the network in one piece pays nothing extra and is
+evaluated exactly as before.
+
 Usage:
     python scripts/select_island_by_redistribution_sensitivity.py --island j
     python scripts/select_island_by_redistribution_sensitivity.py --island j --exclude a b c d e f g
@@ -460,6 +501,7 @@ Usage:
     python scripts/select_island_by_redistribution_sensitivity.py --island m
     python scripts/select_island_by_redistribution_sensitivity.py --island n --polish-iterations 5
     python scripts/select_island_by_redistribution_sensitivity.py --island o --n-seed-candidates 500 --fragility-draws 8000 --filter-margin 0.05
+    python scripts/select_island_by_redistribution_sensitivity.py --island p --n-seed-candidates 500 --fragility-draws 8000 --filter-margin 0.05
 """
 
 import argparse
@@ -592,11 +634,38 @@ def evaluate_cut(
     over that approximation's own sampling noise, so it's a coin flip
     which side of zero the real pipeline lands on. filter_margin > 0
     requires real breathing room, not just the right sign, before a
-    candidate is ever accepted, seed or growth."""
+    candidate is ever accepted, seed or growth.
+
+    PHASE 6l: before doing any of that -- checked first because it's
+    cheap and disqualifying -- reject outright if cutting this boundary
+    would fragment the OUTSIDE network (see module docstring's PHASE 6l).
+    `G.subgraph(set(G.nodes) - members)`'s component count is exactly
+    check_island_connectivity()'s `non_island_components` count: removing
+    `members` as vertices drops every edge with an endpoint in members,
+    which is exactly the boundary set by definition, so this needs no
+    graph copy or edge removal to answer the same question cheaply,
+    before paying for a real admittance/GIC solve on a candidate that's
+    going to be discarded anyway."""
     boundary = boundary_edges(G, members)
     boundary_line_ids = set()
     for u, v in boundary:
         boundary_line_ids.update(str(x) for x in G.edges[u, v].get("line_ids", []))
+
+    outside_components = nx.number_connected_components(G.subgraph(set(G.nodes) - members))
+    if outside_components > 1:
+        return {
+            "boundary": boundary,
+            "benefit": float("-inf"),
+            "worst_case_total_effect": float("inf"),
+            "total_effect_by_storm": {},
+            "passes_real_storm_filter": False,
+            "redistribution_cost": float("inf"),
+            "per_storm": {},
+            "switching_cost": total_boundary_cost(G, boundary),
+            "net_score": float("-inf"),
+            "fragments_outside_network": True,
+            "outside_component_count": outside_components,
+        }
 
     scratch_dirs = get_search_scratch_dirs()
     candidate_df = solve_single_iteration(gic_ctx, boundary_line_ids, scratch_dirs["gic_dir"], scratch_dirs["gnd_gic_dir"])
@@ -622,6 +691,8 @@ def evaluate_cut(
         "per_storm": per_storm,
         "switching_cost": switching_cost,
         "net_score": net_score,
+        "fragments_outside_network": False,
+        "outside_component_count": outside_components,
     }
 
 
