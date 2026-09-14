@@ -45,6 +45,18 @@ SAFETY CHECKS (per ISLANDING_MITIGATION_PLAN.md Phase 4's stated risks):
    purely diagnostic visibility into whether that machinery is doing
    something unexpected on this run.
 
+STRANDED SUBSTATIONS ARE NOW PERSISTED, NOT JUST LOGGED: earlier versions
+of this script computed which non-island substations get cut off from
+the rest of PJM (check 2 above) purely for a log line -- the actual
+substation IDs were thrown away, so nothing downstream (in particular
+compute_island_benefit_cost.py's own-outage cost, which only ever
+charged formal island members) could account for their GDP loss even
+though they're just as disconnected as the island itself for the
+storm's duration. check_island_connectivity() now writes
+va_island_{id}_stranded.json (treating the single largest non-island
+component as "the rest of PJM" and everything else as genuinely
+stranded) so that cost can be picked up downstream.
+
 Run after scripts/select_virginia_island.py (and, as always,
 scripts/run_virginia_admittance.py). Output: get_island_dirs(island_id)'s
 gic_dir/gnd_gic_dir (never touches the baseline va_gic/va_gnd_gic
@@ -62,7 +74,7 @@ import networkx as nx
 from configs import setup_logger
 from configs.virginia_config import VA_NETWORK_DIR, get_island_dirs
 from scripts.run_virginia_gic import main as run_gic_main
-from scripts.island_graph_utils import load_graph, boundary_edges as _boundary_edges
+from scripts.island_graph_utils import load_graph, boundary_edges as _boundary_edges, sanitize_for_json
 
 logger = setup_logger(log_file="logs/run_virginia_islanded_gic.log")
 
@@ -120,17 +132,40 @@ def check_island_connectivity(
 
     non_island_components = [c for c in cut_components if c.isdisjoint(members)]
     outside_fragmented = len(non_island_components) > 1
+    stranded_substations = []
     if outside_fragmented:
-        sizes = sorted((len(c) for c in non_island_components), reverse=True)
+        # Largest non-island component is "the rest of PJM" (still fully
+        # connected to itself, just missing the island); every smaller one
+        # is a substation group that lost its only path to the rest of PJM
+        # through the island and is genuinely stranded for the cut's
+        # duration -- these, not the main remnant, are what downstream
+        # cost accounting needs.
+        non_island_components_by_size = sorted(non_island_components, key=len, reverse=True)
+        stranded_groups = non_island_components_by_size[1:]
+        stranded_substations = sorted({sub for group in stranded_groups for sub in group})
+        sizes = [len(g) for g in non_island_components_by_size]
         logger.warning(
             f"Cutting Island {island_id}'s boundary split the REST of the network into "
             f"{len(non_island_components)} components (sizes {sizes[:10]}"
-            f"{'...' if len(sizes) > 10 else ''}) instead of staying as one. Some substation(s) "
-            f"outside Island {island_id} apparently reached the rest of PJM only via a path "
-            "through it. Not an error -- the Monte Carlo loop's existing non-zero-row filtering "
-            "handles isolated nodes numerically -- but worth knowing before trusting results for "
-            "those specific substations."
+            f"{'...' if len(sizes) > 10 else ''}) instead of staying as one. "
+            f"{len(stranded_substations)} substation(s) outside Island {island_id} apparently "
+            "reached the rest of PJM only via a path through it, and are now stranded -- "
+            "written to va_island_{}_stranded.json for compute_island_benefit_cost.py to cost. "
+            "Not a numerical error -- the Monte Carlo loop's existing non-zero-row filtering "
+            "handles isolated nodes numerically -- but their own-outage cost was previously "
+            "uncharged anywhere.".format(island_id)
         )
+
+    stranded_path = VA_NETWORK_DIR / f"va_island_{island_id}_stranded.json"
+    with open(stranded_path, "w") as f:
+        json.dump(sanitize_for_json({
+            "island_id": island_id,
+            "outside_fragmented": outside_fragmented,
+            "components_before": n_components_before,
+            "components_after": n_components_after,
+            "stranded_substations": stranded_substations,
+        }), f, indent=2)
+    logger.info(f"Saved {stranded_path} ({len(stranded_substations)} stranded substation(s)).")
 
     logger.info(
         f"Connectivity after cut: {n_components_before} -> {n_components_after} components. "
@@ -143,6 +178,7 @@ def check_island_connectivity(
         "components_after": n_components_after,
         "island_is_own_component": island_is_own_component,
         "outside_fragmented": outside_fragmented,
+        "stranded_substations": stranded_substations,
     }
 
 

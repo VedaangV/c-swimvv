@@ -14,6 +14,25 @@ This adds the two missing cost terms: a switching-labor cost and the
 island's own temporary-outage cost, unconditionally -- every island is
 assumed to actually go dark for ASSUMED_DISCONNECTION_HOURS, full stop.
 
+STRANDED-SUBSTATION COST -- ADDED
+------------------------------------------------
+Cutting an island's boundary can incidentally split the REST of the
+network too: some non-member substation's only path to the rest of PJM
+sometimes runs through the island (observed for real on Island K --
+cutting its boundary split the rest of the network into 51 components).
+Those substations are just as disconnected as the island's own members
+for the cut's duration, but until now paid no own-outage cost anywhere
+-- compute_island_gdp() only ever summed GDP over the formal `members`
+list. run_virginia_islanded_gic.py's check_island_connectivity() now
+persists exactly which substations end up stranded (va_island_{id}_
+stranded.json); this script reads that file and charges them the same
+disconnection-hours GDP-loss formula as members, reported as a separate
+stranded_outage_cost_musd line item so the two are never conflated.
+Islands run before this fix have no such file -- main() logs a loud
+warning and proceeds with zero stranded cost (numerically identical to
+the old behavior) rather than failing, but their total_cost_musd should
+be treated as an optimistic lower bound until re-run.
+
 GENERATION CREDIT -- REMOVED, NOT JUST UNUSED
 ------------------------------------------------
 An earlier version of this script discounted own-outage cost by matched
@@ -101,6 +120,49 @@ def compute_island_gdp(members: list) -> dict:
     }
 
 
+def load_stranded_substations(island_id: str) -> list:
+    """Reads va_island_{id}_stranded.json (written by run_virginia_
+    islanded_gic.py's check_island_connectivity()) -- substations outside
+    the formal island that ended up in their own disconnected component
+    when the island's boundary was cut. Missing file means the island was
+    run before this file existed; returns [] and logs a warning rather
+    than failing, so old islands still compute (with the same optimistic-
+    lower-bound total_cost_musd they always had), but the gap is visible
+    rather than silent."""
+    path = VA_NETWORK_DIR / f"va_island_{island_id}_stranded.json"
+    if not path.exists():
+        logger.warning(
+            f"No {path} -- Island {island_id} was solved before stranded-substation cost "
+            "tracking was added (or run_virginia_islanded_gic.py hasn't been re-run since). "
+            "Proceeding with zero stranded cost; total_cost_musd below may be an optimistic "
+            f"lower bound. Re-run `python scripts/run_virginia_islanded_gic.py --island "
+            f"{island_id}` to regenerate this file and get the corrected total."
+        )
+        return []
+    with open(path) as f:
+        data = json.load(f)
+    stranded = data.get("stranded_substations", [])
+    if stranded:
+        logger.info(f"Island {island_id}: {len(stranded)} substation(s) stranded outside the island by the cut.")
+    return stranded
+
+
+def compute_stranded_gdp(stranded_substations: list) -> dict:
+    """Same population/GDP lookup as compute_island_gdp(), but for
+    substations stranded outside the island as a side effect of the
+    boundary cut rather than formal members -- kept as a separate result
+    (not merged into compute_island_gdp's members list) so the two never
+    get silently conflated in logs or output."""
+    if not stranded_substations:
+        return {"stranded_population": 0.0, "stranded_gdp_total_musd": 0.0}
+    exposure = crit.load_economic_exposure()
+    stranded_exposure = exposure[exposure["sub_id"].isin(stranded_substations)]
+    return {
+        "stranded_population": float(stranded_exposure["population"].sum()),
+        "stranded_gdp_total_musd": float(stranded_exposure["gdp_total"].sum()),
+    }
+
+
 def compute_own_outage_cost_musd(
     island_gdp_total_musd: float, disconnection_hours: float = ASSUMED_DISCONNECTION_HOURS
 ) -> dict:
@@ -129,11 +191,18 @@ def main(
     island_gdp = compute_island_gdp(members)
     outage_cost = compute_own_outage_cost_musd(island_gdp["island_gdp_total_musd"], disconnection_hours)
     switching_cost_musd = compute_switching_cost_musd(boundary_line_count, per_line_usd)
-    total_cost_musd = outage_cost["musd"] + switching_cost_musd
+
+    stranded_substations = load_stranded_substations(island_id)
+    stranded_gdp = compute_stranded_gdp(stranded_substations)
+    stranded_outage_cost = compute_own_outage_cost_musd(stranded_gdp["stranded_gdp_total_musd"], disconnection_hours)
+
+    total_cost_musd = outage_cost["musd"] + switching_cost_musd + stranded_outage_cost["musd"]
 
     logger.info(
-        f"Island {island_id}: {len(members)} members, {boundary_line_count} boundary lines. "
+        f"Island {island_id}: {len(members)} members, {boundary_line_count} boundary lines, "
+        f"{len(stranded_substations)} stranded by the cut. "
         f"Own-outage cost: ${outage_cost['musd']:.4f}M ({disconnection_hours}h assumed disconnection). "
+        f"Stranded-substation outage cost: ${stranded_outage_cost['musd']:.4f}M. "
         f"Switching cost: ${switching_cost_musd:.4f}M. Total one-time cost: ${total_cost_musd:.4f}M."
     )
 
@@ -153,6 +222,9 @@ def main(
                 "island_id": island_id, "repair_duration_variant": variant_name, "repair_duration_days": days,
                 "scenario": scenario, "diff_per_day_musd": diff_per_day,
                 "total_benefit_musd": total_benefit_musd, "total_cost_musd": total_cost_musd,
+                "own_outage_cost_musd": outage_cost["musd"], "switching_cost_musd": switching_cost_musd,
+                "stranded_outage_cost_musd": stranded_outage_cost["musd"],
+                "n_stranded_substations": len(stranded_substations),
                 "net_musd": net_musd, "benefit_cost_ratio": ratio,
             })
 
@@ -172,7 +244,11 @@ def main(
         f"(mid_365d variant, {disconnection_hours}h disconnection assumption)."
     )
 
-    return {"island_gdp": island_gdp, "outage_cost": outage_cost, "switching_cost_musd": switching_cost_musd, "df": df}
+    return {
+        "island_gdp": island_gdp, "outage_cost": outage_cost, "switching_cost_musd": switching_cost_musd,
+        "stranded_substations": stranded_substations, "stranded_gdp": stranded_gdp,
+        "stranded_outage_cost": stranded_outage_cost, "df": df,
+    }
 
 
 if __name__ == "__main__":

@@ -15,13 +15,17 @@ are recoverable straight from disk without rerunning anything:
   net_musd/benefit_cost_ratio for all three repair-duration variants,
   plus total_cost_musd, constant across every row for a given island).
 
-switching_cost_musd is recomputed here from boundary_line_count using
-compute_island_benefit_cost.py's own SWITCHING_COST_PER_LINE_USD constant
-(kept in sync manually -- there are only two numbers involved, so a
-shared-constants module felt like overkill, but if that script's default
-ever changes, update the copy below too); own_outage_cost_musd is then
-back-solved as total_cost_musd - switching_cost_musd, since the CSV saves
-only the combined total.
+Newer va_island_{id}_benefit_cost.csv files (after compute_island_
+benefit_cost.py's stranded-substation-cost fix) save own_outage_cost_musd,
+switching_cost_musd, stranded_outage_cost_musd, and n_stranded_substations
+as explicit columns -- read directly when present. Older CSVs saved only
+the combined total_cost_musd, so this falls back to recomputing
+switching_cost_musd from boundary_line_count (compute_island_benefit_
+cost.py's own SWITCHING_COST_PER_LINE_USD constant, kept in sync manually)
+and back-solving own_outage_cost_musd as total_cost_musd -
+switching_cost_musd -- which, for those older runs, silently folds in
+whatever stranded cost existed at the time (none, since the fix didn't
+exist yet) rather than reporting it separately.
 
 Usage:
     python scripts/write_island_benefit_cost_summary.py --island g
@@ -38,7 +42,7 @@ from configs.virginia_config import VA_ECON_DIR, VA_NETWORK_DIR, get_island_dirs
 
 logger = setup_logger(log_file="logs/write_island_benefit_cost_summary.log")
 
-ALL_KNOWN_ISLANDS = ["a", "b", "ab", "c", "d", "e", "f", "g", "h", "j", "k", "l", "m"]
+ALL_KNOWN_ISLANDS = ["a", "b", "ab", "c", "d", "e", "f", "g", "h", "j", "k", "l", "m", "n", "o"]
 
 # Must match scripts/compute_island_benefit_cost.py's SWITCHING_COST_PER_LINE_USD.
 SWITCHING_COST_PER_LINE_USD = 25_000.0
@@ -60,9 +64,24 @@ def write_summary(island_id: str) -> bool:
         return False
 
     boundary_line_count = island.get("boundary_line_count", len(island.get("boundary_line_ids", [])))
-    switching_cost_musd = boundary_line_count * SWITCHING_COST_PER_LINE_USD / 1e6
     total_cost_musd = float(df["total_cost_musd"].iloc[0]) if "total_cost_musd" in df.columns else float("nan")
-    own_outage_cost_musd = total_cost_musd - switching_cost_musd
+
+    has_direct_cost_columns = "own_outage_cost_musd" in df.columns and "switching_cost_musd" in df.columns
+    if has_direct_cost_columns:
+        switching_cost_musd = float(df["switching_cost_musd"].iloc[0])
+        own_outage_cost_musd = float(df["own_outage_cost_musd"].iloc[0])
+        stranded_outage_cost_musd = float(df["stranded_outage_cost_musd"].iloc[0]) if "stranded_outage_cost_musd" in df.columns else 0.0
+        n_stranded_substations = int(df["n_stranded_substations"].iloc[0]) if "n_stranded_substations" in df.columns else 0
+    else:
+        # Older CSV, saved before the stranded-substation-cost fix: only
+        # total_cost_musd exists, so back-solve as before. Any stranded
+        # cost that existed at run time (there wasn't any -- the fix
+        # didn't exist yet) would already be folded silently into this
+        # own_outage_cost_musd rather than broken out.
+        switching_cost_musd = boundary_line_count * SWITCHING_COST_PER_LINE_USD / 1e6
+        own_outage_cost_musd = total_cost_musd - switching_cost_musd
+        stranded_outage_cost_musd = 0.0
+        n_stranded_substations = 0
 
     mid = df[df["repair_duration_variant"] == "mid_365d"] if "repair_duration_variant" in df.columns else df
     mid = mid.set_index("scenario")
@@ -103,6 +122,19 @@ def write_summary(island_id: str) -> bool:
         f"- Switching cost: ${switching_cost_musd:.4f}M ({boundary_line_count} lines x "
         f"${SWITCHING_COST_PER_LINE_USD:,.0f}/line)",
         f"- Own-outage cost: ${own_outage_cost_musd:.4f}M",
+    ]
+    if has_direct_cost_columns:
+        lines.append(
+            f"- Stranded-substation outage cost: ${stranded_outage_cost_musd:.4f}M "
+            f"({n_stranded_substations} substation(s) cut off from the rest of PJM by this island's "
+            "boundary cut, not formal members)"
+        )
+    else:
+        lines.append(
+            "- Stranded-substation outage cost: not tracked for this run (pre-dates the fix in "
+            "run_virginia_islanded_gic.py/compute_island_benefit_cost.py) -- re-run to check."
+        )
+    lines += [
         f"- **Total one-time cost: ${total_cost_musd:.4f}M**",
         "",
         "## Net benefit by scenario (mid_365d repair-duration variant, $M)",
