@@ -245,7 +245,15 @@ def plot_socio_economic_impact(
 
 
 def plot_vuln_trafos(vuln_data, df_lines, file_suffix=""):
-    """Plot substations with failure probability controlling size and color."""
+    """Plot substations with failure probability controlling size and color.
+
+    Text/legend sizes tuned for print/research-paper legibility (panel
+    titles, legend labels/titles, and legend marker/line samples all
+    sized up from their original small-multiple-on-screen defaults) --
+    the legend markers and line-sample widths below are deliberately
+    LARGER than what's drawn on the maps themselves (map linewidths stay
+    physically meaningful/thin; a legend sample only needs to be visible
+    and distinguishable, not to scale)."""
     projection = ccrs.LambertConformal(central_longitude=-98, central_latitude=39.5)
 
     if USE_ALPHA_BETA_SCENARIO:
@@ -274,8 +282,8 @@ def plot_vuln_trafos(vuln_data, df_lines, file_suffix=""):
         "e_250-year-hazard A/ph": "250-year",
     }
 
-    fig = plt.figure(figsize=(10, 8))
-    gs = plt.GridSpec(2, 2, hspace=0.02, wspace=0.02, figure=fig)
+    fig = plt.figure(figsize=(13, 11))
+    gs = plt.GridSpec(2, 2, hspace=0.05, wspace=0.05, figure=fig)
     axes = [
         fig.add_subplot(gs[i, j], projection=projection)
         for i in range(2)
@@ -295,7 +303,7 @@ def plot_vuln_trafos(vuln_data, df_lines, file_suffix=""):
     p_colors = ["#9ca3af"] + [cmap(i) for i in range(5)]
 
     p_sizes = [5, 50, 65, 120, 160, 210]
-    p_leg_ms = [5, 6, 7, 9, 11, 12]
+    p_leg_ms = [9, 11, 13, 16, 19, 22]
     color_map = dict(zip(p_labels, p_colors))
     size_map = dict(zip(p_labels, p_sizes))
     leg_ms_map = dict(zip(p_labels, p_leg_ms))
@@ -353,7 +361,7 @@ def plot_vuln_trafos(vuln_data, df_lines, file_suffix=""):
         ax.add_collection(lc)
 
         scenario_name = scenario_display_names[scenario]
-        ax.set_title(f"({chr(97 + i)}) {scenario_name} Storm", fontsize=10, loc="left")
+        ax.set_title(f"({chr(97 + i)}) {scenario_name} Storm", fontsize=16, fontweight="bold", loc="left")
 
     prob_handles = [
         Line2D(
@@ -372,24 +380,30 @@ def plot_vuln_trafos(vuln_data, df_lines, file_suffix=""):
     leg_prob = fig.legend(
         handles=prob_handles,
         loc="lower center",
-        bbox_to_anchor=(0.7, 0.02),
+        bbox_to_anchor=(0.7, 0.0),
         ncol=3,
         frameon=False,
-        fontsize=9,
-        title="Probability of failure",
-        title_fontsize=9,
-        handletextpad=0.4,
-        columnspacing=0.8,
+        fontsize=14,
+        title="Probability of Failure",
+        title_fontsize=16,
+        handletextpad=0.6,
+        columnspacing=1.4,
+        labelspacing=1.0,
     )
     fig.add_artist(leg_prob)
 
+    # Legend line samples are drawn much thicker than voltage_width_map's
+    # actual on-map widths (those stay thin/physically meaningful on the
+    # map itself) -- a hairline 0.2-0.6pt sample would be all but
+    # invisible once the legend text/markers are sized up for print.
+    legend_voltage_widths = {v: w * 6 for v, w in voltage_width_map.items()}
     volt_handles = [
         Line2D(
             [0],
             [0],
             color=voltage_color_map[v],
-            linewidth=voltage_width_map[v],
-            alpha=0.6,
+            linewidth=legend_voltage_widths[v],
+            alpha=0.8,
             label=f"{v} kV",
         )
         for v in voltage_levels
@@ -397,14 +411,15 @@ def plot_vuln_trafos(vuln_data, df_lines, file_suffix=""):
     leg_tl = fig.legend(
         handles=volt_handles,
         loc="lower center",
-        bbox_to_anchor=(0.3, 0.02),
+        bbox_to_anchor=(0.3, 0.0),
         ncol=3,
         frameon=False,
-        fontsize=9,
-        title="Transmission line voltages",
-        title_fontsize=9,
-        handletextpad=0.6,
-        columnspacing=0.9,
+        fontsize=14,
+        title="Transmission Line Voltages",
+        title_fontsize=16,
+        handletextpad=0.8,
+        columnspacing=1.4,
+        labelspacing=1.0,
     )
     fig.add_artist(leg_tl)
 
@@ -413,7 +428,7 @@ def plot_vuln_trafos(vuln_data, df_lines, file_suffix=""):
         ax.set_facecolor("#F0F0F0")
     fig.patch.set_facecolor("#F0F0F0")
 
-    plt.tight_layout(rect=(0, 0.14, 1, 1))
+    plt.tight_layout(rect=(0, 0.2, 1, 1))
 
     fig.savefig(
         FIGURES_DIR / f"vulnerable_trafos_{file_suffix}.pdf",
