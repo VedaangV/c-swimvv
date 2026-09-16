@@ -244,7 +244,7 @@ def plot_socio_economic_impact(
     plt.show()
 
 
-def plot_vuln_trafos(vuln_data, df_lines, file_suffix=""):
+def plot_vuln_trafos(vuln_data, df_lines, file_suffix="", extent=None, projection=None):
     """Plot substations with failure probability controlling size and color.
 
     Text/legend sizes tuned for print/research-paper legibility (panel
@@ -253,8 +253,15 @@ def plot_vuln_trafos(vuln_data, df_lines, file_suffix=""):
     the legend markers and line-sample widths below are deliberately
     LARGER than what's drawn on the maps themselves (map linewidths stay
     physically meaningful/thin; a legend sample only needs to be visible
-    and distinguishable, not to scale)."""
-    projection = ccrs.LambertConformal(central_longitude=-98, central_latitude=39.5)
+    and distinguishable, not to scale).
+
+    extent/projection default to this function's original CONUS-wide
+    values (unchanged behavior for the national caller) -- pass a
+    tighter extent (e.g. a state's own bounding box) and a projection
+    centered on it for a regional version of this same figure, as
+    viz/plot_virginia_vulnerable_trafos.py does."""
+    if projection is None:
+        projection = ccrs.LambertConformal(central_longitude=-98, central_latitude=39.5)
 
     if USE_ALPHA_BETA_SCENARIO:
         scenarios_to_plot = [
@@ -316,8 +323,8 @@ def plot_vuln_trafos(vuln_data, df_lines, file_suffix=""):
         sc_df = vuln_data[vuln_data["scenario"] == scenario]
         p_by_sub = sc_df.groupby("sub_id")["mean_failure_prob"].mean() * 100.0
 
-        extent = [-120, -75, 25, 50]
-        ax = setup_map(ax, extent)
+        panel_extent = extent if extent is not None else [-120, -75, 25, 50]
+        ax = setup_map(ax, panel_extent)
 
         coords = all_coords.loc[all_coords.index.intersection(p_by_sub.index)].copy()
         coords["p_pct"] = p_by_sub.reindex(coords.index)
