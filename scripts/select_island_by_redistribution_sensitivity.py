@@ -529,6 +529,55 @@ modest (the default, 10) unless a real reason to search further has
 already shown up in a prior run's logs (e.g. several early attempts all
 stopping at 1-2 members for the same reason).
 
+PHASE 6n: SHORTLIST -- THE PROXY FILTER DOESN'T RELIABLY PREDICT A >1-MEMBER ISLAND'S REAL OUTCOME
+------------------------------------------------------------------------
+Island P (5 members, passed Phase 6i/6k's filter at search time with real
+margin -- gannon/halloween/st_patricks worst_case_total_effect all more
+negative than -2, well past the -0.05 filter_margin) still came back with
+gannon strongly NET-NEGATIVE in the real, full pipeline (net_musd
+-58.2 at mid_365d) once actually run through compute_island_benefit_
+cost.py. This isn't just Monte Carlo sampling noise a bigger
+filter_margin or more fragility_draws would shrink: evaluate_cut()'s
+`worst_case_total_effect` (fragility_weighted_redistribution() in
+real_storm_gic.py -- failure_probability x STATIC GDP exposure, summed)
+and the real pipeline's net_musd (the full Ghosh/Leontief input-output
+model's $/day sector-to-sector multiplier effects, run through compare_
+island_econ.py) are two DIFFERENT metrics in two different, never-
+calibrated-against-each-other unit spaces. filter_margin=0.05 is 0.05 in
+the proxy's own arbitrary units, not $0.05 or 5% of anything in the real
+model -- there was never a guaranteed 1:1 relationship between the two
+near zero, it just happened to hold closely enough for every single-
+substation island (H through O) that a small margin was "enough." For a
+5-member island, redistribution touches more substations spread across
+more economic sectors, where the IO model's multiplier effects can (and
+here, did) diverge sharply from the proxy's simple linear sum.
+
+Fix, given how expensive it would be to replace the proxy with the real
+econ model inside the search loop itself (compute_island_benefit_cost.py's
+own pipeline is orders of magnitude more expensive per candidate than one
+fragility_weighted_redistribution() call -- a full GIC Monte Carlo +
+sequential fragility Monte Carlo + IO econ analysis, not a single
+admittance solve): stop treating "the one candidate that wins by
+net_score" as uniquely trustworthy, and generate several real candidates
+to validate instead. `shortlist_size` (default 1, exact old behavior)
+keeps the PHASE 6m retry loop exploring (up to `min_members_seed_attempts`)
+until it has collected `shortlist_size` seeds whose grown island reaches
+`min_members`, instead of stopping at the first. The best one (by member_
+count then net_score) is still returned/saved exactly as before; the rest
+are attached as `candidate_shortlist` (seed/members/boundary_line_ids/
+net_score/worst_case_total_effect/per_storm, no growth_trace/polish_trace
+-- enough to run through the real pipeline, not the full search detail)
+and, when running as a script, saved as their own `va_island_{id}_alt{n}.
+json` files so each can be validated with the exact same commands used
+for the primary candidate (run_virginia_islanded_gic.py --island
+{id}_alt{n}, etc.) without re-running search from scratch.
+
+This does not fix the underlying proxy-vs-real-model gap -- it only
+gives more chances to find a candidate where the gap happens not to flip
+a sign. A durable fix would score candidates with the real econ model (or
+a cheap-but-faithful reduction of it) instead of the fragility-only
+proxy; not attempted here given the cost tradeoff above.
+
 Usage:
     python scripts/select_island_by_redistribution_sensitivity.py --island j
     python scripts/select_island_by_redistribution_sensitivity.py --island j --exclude a b c d e f g
@@ -537,6 +586,7 @@ Usage:
     python scripts/select_island_by_redistribution_sensitivity.py --island n --polish-iterations 5
     python scripts/select_island_by_redistribution_sensitivity.py --island o --n-seed-candidates 500 --fragility-draws 8000 --filter-margin 0.05
     python scripts/select_island_by_redistribution_sensitivity.py --island p --n-seed-candidates 500 --fragility-draws 8000 --filter-margin 0.05 --min-members 5 --min-members-seed-attempts 15
+    python scripts/select_island_by_redistribution_sensitivity.py --island q --n-seed-candidates 500 --fragility-draws 8000 --filter-margin 0.1 --min-members 5 --min-members-seed-attempts 20 --shortlist-size 5
 """
 
 import argparse
@@ -585,6 +635,7 @@ SEARCH_FRAGILITY_DRAWS = 2000
 POLISH_ITERATIONS = 3
 MIN_MEMBERS = 1
 MIN_MEMBERS_SEED_ATTEMPTS = 10
+SHORTLIST_SIZE = 1
 
 
 def load_risk_weights() -> dict:
@@ -1179,12 +1230,14 @@ def select_island_by_sensitivity(
     filter_margin: float = 0.0,
     min_members: int = MIN_MEMBERS,
     min_members_seed_attempts: int = MIN_MEMBERS_SEED_ATTEMPTS,
+    shortlist_size: int = SHORTLIST_SIZE,
 ) -> dict:
     """Run the real-storm-scored greedy search once. Returns a dict with
     the same members/boundary_line_ids/seed/growth_trace shape scripts/
     deprecated_sci_islanding/select_virginia_island.py produced, plus the
     net_score/benefit/redistribution_cost/switching_cost/per_storm
-    breakdown at each step.
+    breakdown at each step, plus a `candidate_shortlist` list of up to
+    `shortlist_size - 1` runner-up candidates (see PHASE 6n below).
 
     min_lines restricts the SEED pool only -- see module docstring's
     SEED CANDIDATE POOL. lookahead_steps controls the Phase 6g bounded
@@ -1209,7 +1262,10 @@ def select_island_by_sensitivity(
     min_members/min_members_seed_attempts are the Phase 6m min-size retry
     -- see module docstring's PHASE 6m section. min_members=1 (default)
     reproduces pre-Phase-6m behavior exactly (only the single best-
-    net_score seed is ever grown)."""
+    net_score seed is ever grown). shortlist_size is the Phase 6n
+    shortlist -- see module docstring's PHASE 6n section. 1 (default)
+    reproduces pre-Phase-6n behavior exactly (stop at the first candidate
+    meeting min_members)."""
     excluded_nodes = excluded_nodes or set()
     eligible_nodes = set(risk_weights) - excluded_nodes
     if not eligible_nodes:
@@ -1286,50 +1342,85 @@ def select_island_by_sensitivity(
         seeds_to_try = sorted_by_net_score[:max(min_members_seed_attempts, 1)]
         logger.info(
             f"PHASE 6m: min_members={min_members} requested -- will grow up to {len(seeds_to_try)} seed "
-            "candidate(s) in net_score order, stopping at the first whose final island reaches "
-            f"{min_members} member(s)."
+            f"candidate(s) in net_score order, {'stopping at the first' if shortlist_size <= 1 else f'collecting up to {shortlist_size}'} "
+            f"whose final island reaches {min_members} member(s)."
         )
     else:
         seeds_to_try = sorted_by_net_score[:1]
 
-    best_result = None
-    meets_min_members = False
+    # PHASE 6n: all attempts are kept, not just the winner -- Island P
+    # showed the proxy filter_margin doesn't reliably predict the real
+    # econ-model outcome for a >1-member island (evaluate_cut()'s
+    # worst_case_total_effect and compute_island_benefit_cost.py's
+    # net_musd are different metrics in different units -- see module
+    # docstring's PHASE 6n section), so the one candidate that happens to
+    # win by net_score is not meaningfully more likely to survive the real
+    # pipeline than the next few. shortlist_size>1 keeps exploring (up to
+    # min_members_seed_attempts) instead of stopping at the first success,
+    # so the caller gets several real candidates to validate instead of
+    # one -- shortlist_size=1 (default) reproduces the exact old
+    # stop-at-first-success behavior.
+    all_attempts = []
+    qualifying_count = 0
     for attempt_idx, (seed, seed_eval) in enumerate(seeds_to_try):
         result = _grow_and_polish_from_seed(
             G, seed, seed_eval, risk_weights, gic_ctx, baseline_gnd_df, exposure, eligible_nodes,
             max_size, switching_cost_weight, redistribution_cost_weight, lookahead_steps,
             fragility_draws, require_real_storm_filter, polish_iterations, filter_margin,
         )
+        all_attempts.append(result)
         if min_members > 1:
             logger.info(
                 f"PHASE 6m attempt {attempt_idx + 1}/{len(seeds_to_try)}: seed {seed} grew to "
                 f"{result['member_count']} member(s) (min_members={min_members}, "
                 f"net_score={result['net_score']:.4f})."
             )
-        if (
-            best_result is None
-            or result["member_count"] > best_result["member_count"]
-            or (result["member_count"] == best_result["member_count"] and result["net_score"] > best_result["net_score"])
-        ):
-            best_result = result
         if result["member_count"] >= min_members:
-            meets_min_members = True
-            break
+            qualifying_count += 1
+            if qualifying_count >= max(shortlist_size, 1):
+                break
+
+    qualifying = [r for r in all_attempts if r["member_count"] >= min_members]
+    meets_min_members = len(qualifying) > 0
+    ranked = sorted(
+        qualifying if qualifying else all_attempts,
+        key=lambda r: (r["member_count"], r["net_score"]), reverse=True,
+    )
+    best_result = ranked[0]
 
     if min_members > 1 and not meets_min_members:
         logger.warning(
-            f"PHASE 6m: none of the {len(seeds_to_try)} attempted seed candidates grew to at least "
+            f"PHASE 6m: none of the {len(all_attempts)} attempted seed candidates grew to at least "
             f"min_members={min_members} (best reached {best_result['member_count']}). Returning the "
             "largest grown island found among those attempted -- try raising "
             "--min-members-seed-attempts to search further, or accept this smaller result. A "
             "min_members requirement can never force growth to add a member that fails the "
             "real-storm filter or hurts net_score, only choose a different seed to grow from."
         )
+    elif min_members > 1 and shortlist_size > 1 and len(qualifying) < shortlist_size:
+        logger.warning(
+            f"PHASE 6n: only {len(qualifying)}/{shortlist_size} requested shortlist candidates were "
+            f"found meeting min_members={min_members} after exhausting all {len(all_attempts)} "
+            "attempted seeds -- raise --min-members-seed-attempts for a fuller shortlist."
+        )
 
     best_result["seed_passed_real_storm_filter"] = seed_passed_filter
     best_result["seed_candidate_trace"] = seed_candidate_trace
     best_result["min_members_requested"] = min_members
     best_result["meets_min_members"] = best_result["member_count"] >= min_members
+
+    # Lean summaries only (no growth_trace/polish_trace) -- the full detail
+    # is already on best_result itself; these are just enough for a caller
+    # to decide which runner-up to validate next through the real pipeline.
+    best_result["candidate_shortlist"] = [
+        {
+            "seed": r["seed"], "members": r["members"], "member_count": r["member_count"],
+            "boundary_line_ids": r["boundary_line_ids"], "boundary_line_count": r["boundary_line_count"],
+            "net_score": r["net_score"], "worst_case_total_effect": r["worst_case_total_effect"],
+            "per_storm": r["per_storm"], "final_island_passes_real_storm_filter": r["final_island_passes_real_storm_filter"],
+        }
+        for r in ranked[1:shortlist_size]
+    ]
     return best_result
 
 
@@ -1350,6 +1441,7 @@ def main(
     filter_margin: float = 0.0,
     min_members: int = MIN_MEMBERS,
     min_members_seed_attempts: int = MIN_MEMBERS_SEED_ATTEMPTS,
+    shortlist_size: int = SHORTLIST_SIZE,
 ):
     G = load_graph()
     attach_conductance(G)
@@ -1379,13 +1471,27 @@ def main(
         cfb_solver=cfb_solver, fragility_draws=fragility_draws,
         require_real_storm_filter=require_real_storm_filter, polish_iterations=polish_iterations,
         filter_margin=filter_margin, min_members=min_members,
-        min_members_seed_attempts=min_members_seed_attempts,
+        min_members_seed_attempts=min_members_seed_attempts, shortlist_size=shortlist_size,
     )
 
+    candidate_shortlist = island.pop("candidate_shortlist", [])
     out_path = VA_NETWORK_DIR / f"va_island_{island_id}.json"
     with open(out_path, "w") as f:
         json.dump(sanitize_for_json(island), f, indent=2, allow_nan=False)
     logger.info(f"Saved {out_path}")
+
+    if candidate_shortlist:
+        for n, alt in enumerate(candidate_shortlist, start=2):
+            alt_id = f"{island_id}_alt{n}"
+            alt_path = VA_NETWORK_DIR / f"va_island_{alt_id}.json"
+            with open(alt_path, "w") as f:
+                json.dump(sanitize_for_json(alt), f, indent=2, allow_nan=False)
+            logger.info(
+                f"PHASE 6n: saved shortlist candidate {n}/{len(candidate_shortlist) + 1} to {alt_path} "
+                f"({alt['member_count']} members, net_score={alt['net_score']:.4f}) -- validate it "
+                f"through the real pipeline the same way as the primary candidate, e.g. "
+                f"`python scripts/run_virginia_islanded_gic.py --island {alt_id}`."
+            )
 
     logger.info(
         f"Island {island_id}: seed={island['seed']}, {island['member_count']} members, "
@@ -1550,6 +1656,16 @@ if __name__ == "__main__":
              "--min-members > 1. Each attempt is a FULL growth run, not a cheap check -- this "
              "multiplies search cost roughly linearly. Ignored when --min-members <= 1.",
     )
+    parser.add_argument(
+        "--shortlist-size", type=int, default=SHORTLIST_SIZE,
+        help="Phase 6n: when --min-members > 1, keep exploring (up to --min-members-seed-attempts) "
+             "until this many candidates meeting --min-members are found, instead of stopping at the "
+             "first. The best is saved as usual (va_island_<id>.json); the rest are saved as "
+             "va_island_<id>_alt2.json, _alt3.json, etc. for independent real-pipeline validation -- "
+             "useful because the search's own filter doesn't reliably predict a >1-member island's "
+             "real economic outcome (see module docstring's PHASE 6n section). 1 (default) reproduces "
+             "pre-Phase-6n behavior exactly.",
+    )
     args = parser.parse_args()
     main(
         island_id=args.island, exclude_island_ids=args.exclude, max_size=args.max_size,
@@ -1559,5 +1675,5 @@ if __name__ == "__main__":
         cfb_solver=args.cfb_solver, fragility_draws=args.fragility_draws,
         require_real_storm_filter=not args.no_real_storm_filter, polish_iterations=args.polish_iterations,
         filter_margin=args.filter_margin, min_members=args.min_members,
-        min_members_seed_attempts=args.min_members_seed_attempts,
+        min_members_seed_attempts=args.min_members_seed_attempts, shortlist_size=args.shortlist_size,
     )
