@@ -54,7 +54,6 @@ Usage:
 """
 
 import pickle
-import time
 
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
@@ -67,7 +66,7 @@ from shapely.geometry import Point
 from scipy.interpolate import griddata
 
 import viz.plots as vplots
-from viz.plot_utils import setup_map, extract_line_coordinates
+from viz.plot_utils import setup_map, extract_line_coordinates, savefig_with_retry
 from scripts.est_gic import load_and_process_gic_data
 from configs import setup_logger, setup_matplotlib
 from configs.virginia_config import VA_DATA_DIR, VA_FIGURES_DIR, get_virginia_boundary
@@ -100,32 +99,6 @@ def load_va_network_lines() -> gpd.GeoDataFrame:
     df_lines = gpd.GeoDataFrame(df_lines, geometry="geometry", crs="EPSG:4326")
     df_lines["name"] = df_lines["name"].astype(str)
     return df_lines
-
-
-def _savefig_with_retry(fig, path, attempts: int = 4, delay_seconds: float = 2.0, **savefig_kwargs):
-    """fig.savefig() with a few retries on Windows' OSError [Errno 22]
-    Invalid argument -- observed directly against real data on this
-    project's own Windows machine, TWICE, on this exact file path,
-    including once right after a run that had just successfully produced
-    and saved the same file moments before. That pattern (same code, same
-    path, intermittent failure) points to a transient environmental race
-    -- most likely OneDrive's sync filter or Windows Defender's real-time
-    scan briefly locking the file as it's created, not a deterministic
-    bug in this script or in matplotlib/Pillow -- so a short retry-with-
-    delay is the right fix here, not another attempt to guess a code-level
-    root cause. Re-raises on the last attempt so a genuine, persistent
-    failure still surfaces instead of being silently swallowed."""
-    last_err = None
-    for attempt in range(1, attempts + 1):
-        try:
-            fig.savefig(path, **savefig_kwargs)
-            return
-        except OSError as e:
-            last_err = e
-            logger.warning(f"savefig({path}) failed on attempt {attempt}/{attempts}: {e}")
-            if attempt < attempts:
-                time.sleep(delay_seconds)
-    raise last_err
 
 
 def generate_virginia_grid_and_mask(
@@ -272,8 +245,8 @@ def main():
     plt.tight_layout()
     out_png = VA_FIGURES_DIR / "va_hazard_maps.png"
     out_pdf = VA_FIGURES_DIR / "va_hazard_maps.pdf"
-    _savefig_with_retry(fig, out_png, dpi=300, bbox_inches="tight")
-    _savefig_with_retry(fig, out_pdf, dpi=300, bbox_inches="tight")
+    savefig_with_retry(fig, out_png, dpi=300, bbox_inches="tight")
+    savefig_with_retry(fig, out_pdf, dpi=300, bbox_inches="tight")
     logger.info(f"Saved {out_png} and {out_pdf}")
 
 

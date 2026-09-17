@@ -58,6 +58,7 @@ import pandas as pd
 from configs import setup_logger, setup_matplotlib
 from configs.virginia_config import VA_ECON_DIR, VA_FIGURES_DIR
 from viz.plot_virginia_gic_risk import _load_substation_labels
+from viz.plot_utils import savefig_with_retry
 
 logger = setup_logger(log_file="logs/plot_virginia_winding_gic_ranking.log")
 
@@ -148,7 +149,7 @@ def main(period: str = "100", top_n: int = TOP_N, scale: str = "linear"):
 
     fig.tight_layout()
     out_path = VA_FIGURES_DIR / f"va_winding_gic_ranking_{period}.png"
-    fig.savefig(out_path, dpi=200, bbox_inches="tight")
+    savefig_with_retry(fig, out_path, dpi=200, bbox_inches="tight")
     logger.info(f"Saved {out_path}")
     if len(top):
         logger.info(f"Top substation: {top.iloc[0]['display_name']} ({top.iloc[0][mean_col]:.2f} A/ph mean)")

@@ -1,6 +1,7 @@
 """Visualization utilities for map setup and data processing."""
 
 import pickle
+import time
 
 import numpy as np
 import pandas as pd
@@ -105,6 +106,36 @@ def export_econ_comparison_table(econ_results, file_suffix=""):
     out.to_csv(out_fp, index=False)
     logger.info(f"Saved comparison table: {out_fp}")
     return out
+
+
+def savefig_with_retry(fig, path, attempts: int = 4, delay_seconds: float = 2.0, **savefig_kwargs):
+    """fig.savefig() with a few retries on Windows' OSError [Errno 22]
+    Invalid argument -- observed directly against real data on this
+    project's own Windows machine, on more than one Virginia figure
+    script, including once right after a run that had JUST successfully
+    produced and saved that same file moments before. That pattern (same
+    code, same path, intermittent failure) points to a transient
+    environmental race -- most likely OneDrive's sync filter or Windows
+    Defender's real-time scan briefly locking the file as it's created,
+    not a deterministic bug in this code or in matplotlib/Pillow -- so a
+    short retry-with-delay is the right fix, not another attempt to guess
+    a code-level root cause. Re-raises on the last attempt so a genuine,
+    persistent failure still surfaces instead of being silently
+    swallowed. Originally added in viz/plot_virginia_hazard_maps.py;
+    moved here once viz/plot_virginia_winding_gic_ranking.py hit the
+    identical error, so a third caller doesn't need to duplicate it
+    again."""
+    last_err = None
+    for attempt in range(1, attempts + 1):
+        try:
+            fig.savefig(path, **savefig_kwargs)
+            return
+        except OSError as e:
+            last_err = e
+            logger.warning(f"savefig({path}) failed on attempt {attempt}/{attempts}: {e}")
+            if attempt < attempts:
+                time.sleep(delay_seconds)
+    raise last_err
 
 
 def setup_map(ax, spatial_extent=[-120, -75, 25, 50]):
