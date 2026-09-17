@@ -12,18 +12,22 @@ egress policy blocks essentially every external domain outright -- not just
 ArcGIS; en.wikipedia.org and query.wikidata.org were both confirmed
 egress-blocked too while building this).
 
-Two independent sources, tried separately and merged (HIFLD takes priority
-where both matched the same substation, as the more authoritative,
-utility-sourced name over a crowd-sourced one):
+Three independent sources, tried separately and merged (priority order
+HIFLD > Wikidata > OSM Overpass where more than one matched the same
+substation -- authoritative utility-sourced name first, then a real
+name from either community source):
 
 1. HIFLD's Electric Substations dataset (HIFLD_SUBSTATIONS_URL, ORNL-
-   hosted, found via search). On the first real run this returned 0 raw
-   features for the whole Virginia bounding box -- confirmed via a direct
-   diagnostic query (not just a schema/field-name mismatch) -- so this
-   dataset may have been restricted the same way HIFLD Open's Hospitals
-   dataset was (see fetch_virginia_critical_loads.py's docstring). Left in
-   place since it's harmless if empty and might work in the future or in
-   a different network environment; do not be surprised if it returns 0.
+   hosted, found via search). CONFIRMED RESTRICTED, not just a sandbox
+   network fluke: a real run from a machine with normal, unblocked
+   internet access still returned only 3 named point features for the
+   ENTIRE state of Virginia (2/2624 project substations matched) --
+   Virginia has many hundreds of real substations, so this is a public-
+   sample cap on an otherwise-restricted federal dataset, the same
+   pattern as HIFLD Open's Hospitals dataset (see fetch_virginia_
+   critical_loads.py's docstring), not a bug in this script's query.
+   Left in place since it's harmless when sparse and costs nothing extra
+   to also check, but don't expect it to meaningfully move coverage.
 2. Wikidata, via its public SPARQL query service: items whose P31
    ("instance of") is one of a fixed list of substation-type QIDs
    (WIKIDATA_SUBSTATION_CLASSES -- each confirmed to exist on Wikidata via
@@ -34,15 +38,27 @@ utility-sourced name over a crowd-sourced one):
    transitive property paths are expensive and the query optimizer doesn't
    reliably apply a geo-box filter first the way the SPARQL syntax implies.
    The fixed-list VALUES approach avoids that at the cost of only catching
-   substation subtypes explicitly listed, not the full subclass tree. A
-   genuinely different kind of source than HIFLD -- community-maintained,
-   not a federal/DHS-administered dataset -- so it fails (or doesn't) for
-   different reasons. Expect sparse, notability-skewed coverage: Wikidata
-   is not an exhaustive infrastructure inventory, and will likely only have
-   larger/more notable substations, not most of the 402 in this project's
-   network.
+   substation subtypes explicitly listed, not the full subclass tree.
+   CONFIRMED SPARSE on a real run too (1/2624 matched) -- Wikidata is not
+   an exhaustive infrastructure inventory, and only really covers larger/
+   more notable substations, consistent with the module's original
+   expectation, not a surprise finding.
+3. OSM via the Overpass API (OVERPASS_URL), added after (1) and (2) both
+   confirmed too sparse to matter: a LIVE query against the current OSM
+   database for power=substation/power=station elements carrying a name
+   tag, independent of whatever snapshot age grid_processed/ss_df.pkl's
+   own SS_NAME column was extracted from -- OSM is continuously edited, so
+   a fresh query can pick up name tags added since that extraction, or on
+   "way" (polygon-mapped) substation features a nodes-only extraction may
+   have missed entirely. Not access-restricted like HIFLD (no sampling
+   cap, no API key) -- the honest limitation here is coverage, not access:
+   OSM mappers still have to have visited and tagged a given substation
+   with a name for this to help, so small/rural substations may still
+   come back empty. Untested in this sandbox (overpass-api.de is egress-
+   blocked here too) -- run from a machine with normal internet access,
+   same as (1) and (2).
 
-Both sources nearest-neighbor matched to this project's own sub_id
+All three sources nearest-neighbor matched to this project's own sub_id
 coordinates (from va_topology_metrics.csv) within SNAP_DISTANCE_M --
 reusing virginia_config.py's existing line-endpoint snap tolerance rather
 than inventing a new distance threshold, since it's the same kind of "same
@@ -103,6 +119,29 @@ SELECT ?item ?itemLabel ?coord WHERE {{
   }}
   SERVICE wikibase:label {{ bd:serviceParam wikibase:language "en". }}
 }}
+"""
+
+# Public Overpass instance -- no API key, no sampling cap (unlike HIFLD's
+# feature service, confirmed above to cap public results). A mirror list
+# isn't attempted here since this project's other fetch_* scripts also
+# hit a single named endpoint per source and just report failure honestly
+# rather than silently retrying against a different provider.
+OVERPASS_URL = "https://overpass-api.de/api/interpreter"
+# node+way, power=substation and the less common power=station tagging
+# (used for some larger transmission substations), each requiring a name
+# tag present (untagged features are exactly what this script exists to
+# find real names FOR, so they're useless as a names source themselves).
+# "out center" gives ways a computed center point directly rather than
+# needing this script to average their node geometry itself.
+OVERPASS_SUBSTATION_QUERY = """
+[out:json][timeout:180];
+(
+  node["power"="substation"]["name"]({miny},{minx},{maxy},{maxx});
+  way["power"="substation"]["name"]({miny},{minx},{maxy},{maxx});
+  node["power"="station"]["name"]({miny},{minx},{maxy},{maxx});
+  way["power"="station"]["name"]({miny},{minx},{maxy},{maxx});
+);
+out center tags;
 """
 
 PAGE_SIZE = 2000
@@ -239,6 +278,54 @@ def _fetch_wikidata_substations(bbox: tuple, retries: int = 3) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def _fetch_osm_overpass_substations(bbox: tuple, retries: int = 3) -> pd.DataFrame:
+    """Live query against the current OSM database -- see module
+    docstring point 3 for why this exists alongside grid_processed/
+    ss_df.pkl's own (likely older-snapshot) SS_NAME column."""
+    minx, miny, maxx, maxy = bbox
+    query = OVERPASS_SUBSTATION_QUERY.format(minx=minx, miny=miny, maxx=maxx, maxy=maxy)
+    headers = {"User-Agent": FETCH_USER_AGENT}
+
+    r = None
+    for attempt in range(retries):
+        try:
+            r = requests.post(OVERPASS_URL, data={"data": query}, headers=headers, timeout=200)
+            if r.status_code == 200:
+                break
+            logger.warning(f"Overpass (attempt {attempt + 1}/{retries}) -> HTTP {r.status_code}: {r.text[:300]!r}")
+        except Exception as e:
+            logger.warning(f"Overpass (attempt {attempt + 1}/{retries}) -> {e!r}")
+            r = None
+        time.sleep(5 * (attempt + 1))
+    else:
+        logger.error(f"Overpass: all {retries} attempts failed.")
+        return pd.DataFrame(columns=["name", "latitude", "longitude"])
+
+    try:
+        data = r.json()
+    except Exception as e:
+        logger.error(f"Overpass: response wasn't valid JSON ({e!r}); first 300 chars: {r.text[:300]!r}")
+        return pd.DataFrame(columns=["name", "latitude", "longitude"])
+
+    rows = []
+    for el in data.get("elements", []):
+        tags = el.get("tags", {}) or {}
+        name = tags.get("name")
+        if not name:
+            continue
+        if el.get("type") == "node":
+            lat, lon = el.get("lat"), el.get("lon")
+        else:
+            center = el.get("center") or {}
+            lat, lon = center.get("lat"), center.get("lon")
+        if lat is None or lon is None:
+            continue
+        rows.append({"name": name, "latitude": lat, "longitude": lon})
+
+    logger.info(f"Overpass: fetched {len(rows)} named substation/station elements within the query bbox.")
+    return pd.DataFrame(rows)
+
+
 def _nearest_match(ours_3857: gpd.GeoDataFrame, named_points: pd.DataFrame) -> pd.DataFrame:
     """Nearest-neighbor join named_points (must have name/latitude/
     longitude in EPSG:4326) onto ours_3857 (this project's own sub_id
@@ -285,14 +372,20 @@ def main():
     wikidata_matches = wikidata_matches.assign(source="wikidata")
     logger.info(f"Wikidata: {len(wikidata_matches)}/{len(ours_3857)} substations matched within {SNAP_DISTANCE_M}m.")
 
-    # HIFLD listed first -> keep="first" on a duplicate sub_id prefers the
-    # HIFLD (utility-sourced) name over Wikidata's (crowd-sourced) one.
-    combined = pd.concat([hifld_matches, wikidata_matches], ignore_index=True)
+    overpass = _fetch_osm_overpass_substations((minx, miny, maxx, maxy))
+    overpass_matches = _nearest_match(ours_3857, overpass)
+    overpass_matches = overpass_matches.assign(source="osm_overpass")
+    logger.info(f"OSM Overpass: {len(overpass_matches)}/{len(ours_3857)} substations matched within {SNAP_DISTANCE_M}m.")
+
+    # Listed HIFLD, Wikidata, OSM Overpass -> keep="first" on a duplicate
+    # sub_id prefers the more authoritative source when more than one
+    # matched the same substation (see module docstring's priority order).
+    combined = pd.concat([hifld_matches, wikidata_matches, overpass_matches], ignore_index=True)
     combined = combined.drop_duplicates(subset="sub_id", keep="first")
 
     if combined.empty:
         logger.warning(
-            "No named substations matched from either source -- writing an "
+            "No named substations matched from any source -- writing an "
             "empty result. Both viz scripts fall back cleanly to OSM-based "
             "labels when this file is empty/missing."
         )
@@ -302,7 +395,8 @@ def main():
     logger.info(
         f"Saved {out_path}: {len(combined)} substations with a real name "
         f"({(combined['source'] == 'hifld').sum()} from HIFLD, "
-        f"{(combined['source'] == 'wikidata').sum()} from Wikidata)."
+        f"{(combined['source'] == 'wikidata').sum()} from Wikidata, "
+        f"{(combined['source'] == 'osm_overpass').sum()} from OSM Overpass)."
     )
 
 
