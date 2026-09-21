@@ -60,21 +60,20 @@ def _load_substation_labels() -> dict:
 
     Priority: (1) a real name from an external source (scripts/fetch_
     virginia_substation_names.py's optional va_substation_names.csv --
-    HIFLD's Electric Substations dataset and/or Wikidata, nearest-neighbor
-    matched to this project's own substations); (2) OSM's own name tag from
-    ss_df.pkl, where present; (3) operator + voltage + coordinates; (4)
-    "Unnamed" + coordinates. Each tier falls through gracefully to the next
+    HIFLD's Electric Substations dataset, Wikidata, and/or a live OSM
+    Overpass query, nearest-neighbor matched to this project's own
+    substations); (2) OSM's own name tag from ss_df.pkl, where present;
+    (3) coordinates alone. Each tier falls through gracefully to the next
     -- external names in particular are optional (the fetch script may
     never have been run, or a given substation may not have matched within
     the snap tolerance), same "absence isn't an error" pattern used
     throughout this pipeline's optional data sources.
 
-    Fallback labels (tiers 3-4) append the raw sub_id -- without it, two
-    distinct substations that share a voltage class and both lack an OSM
-    name tag produce visually near-identical labels (e.g. two different
-    "115000 substation (lat, lon)" bars), which reads as a duplicate/bug on
-    a chart even though the small-print coordinates do differ. A real name
-    (external or OSM) is assumed unique enough to stand alone.
+    The coordinates-only fallback (tier 3) deliberately carries no operator/
+    voltage guess and no raw ID -- two distinct unnamed substations landing
+    on the exact same rounded coordinates is rare enough in practice not to
+    be worth the visual noise of appending an ID to every fallback label
+    across every figure that uses this lookup.
     """
     external_names = {}
     names_path = VA_NETWORK_DIR / "va_substation_names.csv"
@@ -105,18 +104,12 @@ def _load_substation_labels() -> dict:
             labels[ss_id] = str(name).strip()
             continue
 
-        operator = row.get("SS_OPERATOR")
-        voltage = row.get("SS_VOLTAGE")
-        parts = []
-        if pd.notna(operator) and str(operator).strip() not in ("", "Unknown"):
-            parts.append(str(operator).strip())
-        if pd.notna(voltage) and str(voltage).strip() not in ("", "Unknown"):
-            parts.append(f"{voltage}")
-        if parts:
-            label = " ".join(parts) + f" substation ({row['lat']:.2f}, {row['lon']:.2f}) [SS {ss_id}]"
-        else:
-            label = f"Unnamed substation ({row['lat']:.2f}, {row['lon']:.2f}) [SS {ss_id}]"
-        labels[ss_id] = label
+        # No real name from any source -- just the coordinates, nothing
+        # else (no operator/voltage guess, no raw ID). Two distinct
+        # unnamed substations landing on the exact same rounded
+        # coordinates is rare enough in practice not to be worth the
+        # visual noise of an appended ID on every fallback label.
+        labels[ss_id] = f"({row['lat']:.2f}, {row['lon']:.2f})"
 
     return labels
 

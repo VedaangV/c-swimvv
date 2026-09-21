@@ -35,6 +35,7 @@ Usage:
 
 import argparse
 
+import numpy as np
 import matplotlib.pyplot as plt
 import pandas as pd
 import geopandas as gpd
@@ -139,7 +140,10 @@ def plot_one_island(island_id: str, coords: pd.DataFrame, lines: gpd.GeoDataFram
     # original color show through the dash gaps.
     ctx_lines_non_boundary = ctx_lines[~ctx_lines["name"].isin(boundary_line_ids)]
 
-    fig, ax = plt.subplots(figsize=(9, 8))
+    fig = plt.figure(figsize=(11, 8))
+    gs = fig.add_gridspec(1, 2, width_ratios=[3.4, 1], wspace=0.08)
+    ax = fig.add_subplot(gs[0])
+    inset_ax = fig.add_subplot(gs[1])
 
     # Context: all nearby transmission lines, colored by voltage class, thin.
     for v in VOLTAGE_LEVELS:
@@ -176,6 +180,14 @@ def plot_one_island(island_id: str, coords: pd.DataFrame, lines: gpd.GeoDataFram
     ax.set_ylabel("Latitude")
     ax.set_title(f"Island {island_id.upper()}: isolated substation(s) and cut boundary lines")
     ax.set_facecolor("#F5F5F5")
+    # Degrees of longitude cover less real ground distance than degrees of
+    # latitude away from the equator -- plotting raw lon/lat with a plain
+    # 1:1 aspect ratio visibly stretches everything east-west. Compensate
+    # with a standard equirectangular correction (1/cos(latitude)) rather
+    # than a real map projection, which isn't needed at this local, zoomed
+    # scale.
+    mean_lat_main = (ext_miny + ext_maxy) / 2
+    ax.set_aspect(1.0 / max(np.cos(np.radians(mean_lat_main)), 1e-6))
 
     voltage_handles = [
         plt.Line2D([0], [0], color=VOLTAGE_COLOR_MAP[v], linewidth=2, label=f"{v} kV") for v in VOLTAGE_LEVELS
@@ -186,9 +198,9 @@ def plot_one_island(island_id: str, coords: pd.DataFrame, lines: gpd.GeoDataFram
     )
     ax.legend(handles=voltage_handles, loc="lower left", fontsize=8, framealpha=0.9)
 
-    # Inset locator map: Virginia's outline, with a star at the island's
-    # location, positioned in the figure's lower-right corner.
-    inset_ax = ax.inset_axes([0.68, 0.68, 0.3, 0.3])
+    # Locator panel: Virginia's outline, with a star at the island's
+    # location -- a genuinely separate subplot beside the main map, not
+    # layered on top of it, so it never covers real map content.
     va_x, va_y = va_boundary.exterior.xy if va_boundary.geom_type == "Polygon" else (None, None)
     if va_x is not None:
         inset_ax.plot(va_x, va_y, color="black", linewidth=0.8)
@@ -203,9 +215,11 @@ def plot_one_island(island_id: str, coords: pd.DataFrame, lines: gpd.GeoDataFram
     inset_ax.set_yticks([])
     for spine in inset_ax.spines.values():
         spine.set_visible(False)
-    inset_ax.set_title("Location in Virginia", fontsize=7)
+    inset_ax.set_title("Location in Virginia", fontsize=9)
+    va_bounds = va_boundary.bounds
+    mean_lat_va = (va_bounds[1] + va_bounds[3]) / 2
+    inset_ax.set_aspect(1.0 / max(np.cos(np.radians(mean_lat_va)), 1e-6))
 
-    fig.tight_layout()
     out_path = VA_FIGURES_DIR / f"va_island_{island_id}_map.png"
     savefig_with_retry(fig, out_path, dpi=300, bbox_inches="tight")
     plt.close(fig)
