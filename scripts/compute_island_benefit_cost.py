@@ -60,6 +60,13 @@ cost assumption):
   va_island_{id}.json). Set an order of magnitude below the NZ paper's
   total ~$250k figure -- that figure covered a much larger multi-line
   national switching plan, not one island's boundary.
+- SWITCHING_EVENTS_PER_STORM: an island's boundary lines get switched
+  TWICE per storm, not once -- opened going into the storm's peak-risk
+  window (see ASSUMED_DISCONNECTION_HOURS below) and reclosed coming out
+  of it, both real labor events. Earlier versions of this script priced
+  only one switching operation per line; fixed to 2 so switching cost
+  reflects the full round trip rather than silently assuming free
+  reconnection.
 - ASSUMED_DISCONNECTION_HOURS: how long the island is assumed offline
   during a storm's peak-risk window -- sizes the OWN-OUTAGE COST term
   (island members' annual GDP x hours/year-hours), unconditionally now.
@@ -91,6 +98,7 @@ import scripts.virginia_risk_data as crit
 logger = setup_logger(log_file="logs/compute_island_benefit_cost.log")
 
 SWITCHING_COST_PER_LINE_USD = 25_000.0
+SWITCHING_EVENTS_PER_STORM = 2  # open before the storm's peak-risk window, reclose after
 ASSUMED_DISCONNECTION_HOURS = 6.0
 REPAIR_DURATION_DAYS_VARIANTS = {"low_180d": 180, "mid_365d": 365, "high_730d": 730}
 
@@ -175,14 +183,19 @@ def compute_own_outage_cost_musd(
     return {"musd": musd}
 
 
-def compute_switching_cost_musd(boundary_line_count: int, per_line_usd: float = SWITCHING_COST_PER_LINE_USD) -> float:
-    return boundary_line_count * per_line_usd / 1e6
+def compute_switching_cost_musd(
+    boundary_line_count: int,
+    per_line_usd: float = SWITCHING_COST_PER_LINE_USD,
+    events_per_storm: int = SWITCHING_EVENTS_PER_STORM,
+) -> float:
+    return boundary_line_count * per_line_usd * events_per_storm / 1e6
 
 
 def main(
     island_id: str = "g",
     disconnection_hours: float = ASSUMED_DISCONNECTION_HOURS,
     per_line_usd: float = SWITCHING_COST_PER_LINE_USD,
+    events_per_storm: int = SWITCHING_EVENTS_PER_STORM,
 ):
     island = load_island(island_id)
     members = island["members"]
@@ -190,7 +203,7 @@ def main(
 
     island_gdp = compute_island_gdp(members)
     outage_cost = compute_own_outage_cost_musd(island_gdp["island_gdp_total_musd"], disconnection_hours)
-    switching_cost_musd = compute_switching_cost_musd(boundary_line_count, per_line_usd)
+    switching_cost_musd = compute_switching_cost_musd(boundary_line_count, per_line_usd, events_per_storm)
 
     stranded_substations = load_stranded_substations(island_id)
     stranded_gdp = compute_stranded_gdp(stranded_substations)
@@ -203,7 +216,8 @@ def main(
         f"{len(stranded_substations)} stranded by the cut. "
         f"Own-outage cost: ${outage_cost['musd']:.4f}M ({disconnection_hours}h assumed disconnection). "
         f"Stranded-substation outage cost: ${stranded_outage_cost['musd']:.4f}M. "
-        f"Switching cost: ${switching_cost_musd:.4f}M. Total one-time cost: ${total_cost_musd:.4f}M."
+        f"Switching cost: ${switching_cost_musd:.4f}M ({boundary_line_count} lines x "
+        f"{events_per_storm} switching events). Total one-time cost: ${total_cost_musd:.4f}M."
     )
 
     econ_result = econ_cmp.main(island_id=island_id, confidence="mean")
@@ -256,5 +270,9 @@ if __name__ == "__main__":
     parser.add_argument("--island", type=str, default="g")
     parser.add_argument("--disconnection-hours", type=float, default=ASSUMED_DISCONNECTION_HOURS)
     parser.add_argument("--per-line-usd", type=float, default=SWITCHING_COST_PER_LINE_USD)
+    parser.add_argument("--events-per-storm", type=int, default=SWITCHING_EVENTS_PER_STORM)
     args = parser.parse_args()
-    main(island_id=args.island, disconnection_hours=args.disconnection_hours, per_line_usd=args.per_line_usd)
+    main(
+        island_id=args.island, disconnection_hours=args.disconnection_hours,
+        per_line_usd=args.per_line_usd, events_per_storm=args.events_per_storm,
+    )
