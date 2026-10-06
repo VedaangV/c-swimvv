@@ -102,3 +102,13 @@ data/rep_data/uiuc150/sub_ref.pkl
 data/rep_data/uiuc150/substations_df.pkl
 
 data/grid_mapping.csv
+# LaTeX build artifacts (paper/)
+paper/*.aux
+paper/*.log
+paper/*.out
+paper/*.blg
+paper/*.bbl
+paper/*.fls
+paper/*.fdb_latexmk
+paper/*.synctex.gz
+paper/*.pdf

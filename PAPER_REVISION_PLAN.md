@@ -1,5 +1,54 @@
 # Paper Revision Plan — Response to Ed's Review (2026-10-01)
 
+## Progress update (2026-10-06)
+
+Got the real Overleaf source (`paper/main.tex` + figures + `.bib`, now in this
+repo) and installed a full LaTeX toolchain in this sandbox to actually compile
+and visually verify every change below, not just edit text blind. Done so far:
+
+- **Combined Tables 1, 2, 3** into one `longtable` (`tab:islanding-legends`),
+  grouped by method via a `Method` column. Saves 2 PU.
+- **Removed Figure 1** (`GIC_flowchart.png`) per Ed's request.
+- **Replaced Tables 5, 6, 7 with one results figure** (`viz/plot_island_benefit_cost_summary.py`,
+  new script — net benefit per scenario, grouped/colored by island, fixed
+  Okabe-Ito categorical colors). Net: -3 tables, +1 figure, but readers now
+  get the comparison Ed asked for ("magnitudes without needing to read each
+  number") at a glance. Raw per-scenario values moved to a new
+  `paper/supporting_information.tex` (Tables S1-S3), using the
+  `agutexSI2019.cls` template that was already sitting in the Overleaf
+  export.
+- **Found and worked around a real bug in `agutexSI2019.cls`**: its
+  `\table`/`\tabular` redefinition crashes pdfLaTeX on *any* table content
+  under current TeX Live (confirmed with a 2-cell, no-math minimal test
+  case) — not something caused by our content. Worked around by building
+  each SI table as `\begin{center}` + manual "Table S1." label instead of
+  a real `\caption`'d float. Flagged in a code comment for whoever edits
+  that file next, in case AGU ships a fixed class later.
+- **Verified by actually compiling**, not assumed: installed `texlive` in
+  this sandbox, ran `pdflatex` + `bibtex` + `pdflatex` ×2 on both documents,
+  confirmed zero undefined references/citations, and visually inspected the
+  rendered pages (figure, caption, and all three SI tables render cleanly
+  within margins).
+
+**Updated PU count**: figures 14, tables 2 (was 7), body words 9,310 (was
+9,575) → **~34.6 PU**, down from ~40.2 PU. Still ~9.6 PU over the 25 PU
+limit — Figures 4+5+6 and 12+13+14 still need combining, and body text still
+needs a real trim, per Section 5's worksheet below.
+
+- **Figure 3 code fix** (`viz/plot_virginia_network.py`): added a filled
+  basemap layer (PJM states, not just boundary outlines), a "Location in
+  the PJM footprint" inset locator (same post-draw-position technique as
+  the island maps), a `label=` fix so substations actually appear in the
+  legend (silently missing before), and smaller/lighter substation dots so
+  they read as context rather than competing with the colored lines.
+  Verified with synthetic state/line/substation data (real run needs
+  Vedaang's machine) — renders correctly, no overlap between panels.
+
+**Still open** (blocked or not yet started): Figure 2 redesign, Figures 4-6
+and 12-14 combination, research-question/discussion insertion, restoration-
+curve modeling, AI-writing line-edit pass, abstract/conclusion rewrite.
+
+
 Tracks every item from Ed's feedback email, who does it, and what's needed to
 unblock it. Numbers below are computed directly from the submitted PDF
 (`pdftotext` + figure/table caption count), not estimated.

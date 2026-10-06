@@ -1,0 +1,123 @@
+\documentclass[draft]{agutexSI2019}
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{textcomp}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{graphicx}
+
+\begin{document}
+
+\title{Supporting Information for ``Assessment of Geomagnetic Storm Impacts in Virginia: Grid Vulnerability, Economic Consequences, and Mitigation Informed by Data''}
+
+\authors{
+    Vedaang~Verma$^{1}$,
+    Dennies~K.~Bor$^{1}$,
+    Edward~J.~Oughton$^{1\ast}$ \\
+    \small$^{1}$Department of Geography and Geoinformation Science,
+    George Mason University, Fairfax, VA, USA. \\
+    \small$^\ast$Corresponding author (email: eoughton@gmu.edu).
+}
+
+\noindent\textbf{Contents of this file}
+\begin{enumerate}
+\item Tables S1 to S3
+\end{enumerate}
+
+\noindent\textbf{Introduction}
+
+This Supporting Information reports the full per-scenario benefit, cost, and
+benefit--cost-ratio values underlying Figure~7 (``Net benefit by scenario for
+Islands A, B, and C'') of the main text. The main text summarizes these
+results as a single comparative figure; the tables here give the exact
+values for readers who wish to use or reproduce specific numbers.
+
+% NOTE for whoever next edits this file: agutexSI2019.cls's \table/\tabular
+% redefinition crashes pdfLaTeX on ANY \begin{table}...\begin{tabular}
+% content under TeX Live 2023 -- confirmed with a 2-cell, no-math, no-caption
+% minimal test case, so it is a bug in this (old) AGU SI class file itself,
+% not anything content-specific. \begin{center}+\tabular (no \table float,
+% manual "Table S1." label instead of \caption) avoids the crash entirely.
+% \resizebox{\textwidth}{!}{...} (the fix used for the same overflow problem
+% in main.tex) also triggers a "Division by 0" error here -- some other
+% interaction with this class's draft-mode internals -- so \footnotesize is
+% used instead to fit the Benefit-Cost Ratio column within the margin.
+% If AGU ever ships a fixed agutexSI2019.cls, switching back to a real
+% \begin{table}\caption{...}\end{table} would restore proper float numbering
+% and \ref{} support.
+
+\begin{center}
+\textbf{Table S1.} Island A benefit--cost by scenario, assuming 365 days before damaged transformer replacement and a 6-hour disconnection. The island contains three members with two cut boundary lines. The one-time cost is \$0.1094M, comprising a \$0.1000M switching cost and a \$0.0094M outage cost for the island.\\[6pt]
+\footnotesize
+\begin{tabular}{lrrrr}
+\hline
+Scenario & $\Delta$Econ/day (\$M) & Total Benefit (\$M) & Net Benefit (\$M) & Benefit--Cost Ratio \\
+\hline
+50-year            & $-5.08$ & $-1854.4$ & $-1854.5$ & $-16{,}951$ \\
+75-year            & $-5.88$ & $-2146.6$ & $-2146.7$ & $-19{,}622$ \\
+100-year           & $-6.23$ & $-2274.0$ & $-2274.1$ & $-20{,}786$ \\
+125-year           & $-6.25$ & $-2281.3$ & $-2281.4$ & $-20{,}853$ \\
+150-year           & $-6.20$ & $-2264.2$ & $-2264.3$ & $-20{,}696$ \\
+175-year           & $-6.17$ & $-2251.6$ & $-2251.7$ & $-20{,}582$ \\
+200-year           & $-6.07$ & $-2215.1$ & $-2215.2$ & $-20{,}248$ \\
+225-year           & $-5.87$ & $-2142.9$ & $-2143.0$ & $-19{,}588$ \\
+250-year           & $-5.72$ & $-2086.1$ & $-2086.2$ & $-19{,}068$ \\
+Gannon (2024)      & $-5.32$ & $-1942.7$ & $-1942.8$ & $-17{,}758$ \\
+Halloween (2003)   & $0.48$  & $176.3$   & $176.2$   & $1{,}612$   \\
+St. Patrick's Day (2015) & $0.12$ & $43.5$ & $43.4$ & $398$ \\
+\hline
+\end{tabular}
+\end{center}
+
+\vspace{18pt}
+
+\begin{center}
+\textbf{Table S2.} Island B benefit--cost by scenario, assuming 365 days before damaged transformer replacement and a 6-hour disconnection. The island contains two members with two cut boundary lines. The one-time cost is \$0.1129M, comprising a \$0.1000M switching cost and a \$0.0129M outage cost for the island.\\[6pt]
+\footnotesize
+\begin{tabular}{lrrrr}
+\hline
+Scenario & $\Delta$Econ/day (\$M) & Total Benefit (\$M) & Net Benefit (\$M) & Benefit--Cost Ratio \\
+\hline
+50-year            & $8.19$  & $2987.9$ & $2987.8$ & $26{,}465$ \\
+75-year            & $10.53$ & $3843.6$ & $3843.4$ & $34{,}044$ \\
+100-year           & $12.08$ & $4408.6$ & $4408.4$ & $39{,}048$ \\
+125-year           & $13.11$ & $4784.8$ & $4784.7$ & $42{,}381$ \\
+150-year           & $13.86$ & $5060.0$ & $5059.9$ & $44{,}818$ \\
+175-year           & $14.34$ & $5235.1$ & $5235.0$ & $46{,}369$ \\
+200-year           & $14.69$ & $5360.4$ & $5360.3$ & $47{,}479$ \\
+225-year           & $14.97$ & $5464.6$ & $5464.5$ & $48{,}402$ \\
+250-year           & $15.22$ & $5554.7$ & $5554.6$ & $49{,}200$ \\
+Gannon (2024)      & $-1.10$ & $-400.0$ & $-400.1$ & $-3{,}543$ \\
+Halloween (2003)   & $-0.46$ & $-168.3$ & $-168.4$ & $-1{,}491$ \\
+St. Patrick's Day (2015) & $-0.01$ & $-3.7$ & $-3.8$ & $-33$ \\
+\hline
+\end{tabular}
+\end{center}
+
+\vspace{18pt}
+
+\begin{center}
+\textbf{Table S3.} Island C benefit--cost by scenario, assuming 365 days before damaged transformer replacement and a 6-hour disconnection. The island contains one member with four cut boundary lines. The one-time cost is \$0.2043M, comprising a \$0.2000M switching cost and a \$0.0043M outage cost for the island.\\[6pt]
+\footnotesize
+\begin{tabular}{lrrrr}
+\hline
+Scenario & $\Delta$Econ/day (\$M) & Total Benefit (\$M) & Net Benefit (\$M) & Benefit--Cost Ratio \\
+\hline
+50-year            & $4.82$ & $1758.0$ & $1757.7$ & $8{,}605$ \\
+75-year            & $5.63$ & $2055.2$ & $2055.0$ & $10{,}060$ \\
+100-year           & $5.96$ & $2175.1$ & $2174.9$ & $10{,}647$ \\
+125-year           & $6.03$ & $2200.5$ & $2200.3$ & $10{,}771$ \\
+150-year           & $5.96$ & $2175.3$ & $2175.1$ & $10{,}648$ \\
+175-year           & $5.72$ & $2089.2$ & $2089.0$ & $10{,}226$ \\
+200-year           & $5.41$ & $1973.5$ & $1973.3$ & $9{,}660$ \\
+225-year           & $5.08$ & $1853.9$ & $1853.7$ & $9{,}074$ \\
+250-year           & $4.72$ & $1724.0$ & $1723.8$ & $8{,}439$ \\
+Gannon (2024)      & $9.69$  & $3537.7$ & $3537.5$ & $17{,}316$ \\
+Halloween (2003)   & $3.81$  & $1390.0$ & $1389.8$ & $6{,}804$ \\
+St. Patrick's Day (2015) & $0.03$ & $10.3$ & $10.1$ & $50$ \\
+\hline
+\end{tabular}
+\end{center}
+
+\end{document}
