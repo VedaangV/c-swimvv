@@ -35,6 +35,7 @@ from configs.virginia_config import (
     get_virginia_boundary,
     _load_states,
 )
+from viz.plot_utils import savefig_with_retry
 
 logger = setup_logger(log_file="logs/plot_virginia_network.log")
 
@@ -124,7 +125,7 @@ def main():
     inset_ax.set_aspect(1.0 / max(np.cos(np.radians(inset_mean_lat)), 1e-6))
 
     out_path = VA_FIGURES_DIR / "va_pjm_network.png"
-    fig.savefig(out_path, dpi=300, bbox_inches="tight")
+    savefig_with_retry(fig, out_path, dpi=300, bbox_inches="tight")
     logger.info(f"Saved {out_path}")
     logger.info(f"Lines: {len(lines)}, Substations: {len(subs)}")
     for voltage in sorted(VOLTAGE_COLORS, reverse=True):
