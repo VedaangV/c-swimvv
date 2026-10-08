@@ -1,8 +1,22 @@
 """
-Visualization of the VA+PJM EHV network built by
-scripts/build_virginia_network.py — a fast, no-Monte-Carlo sanity check of
-topology before running the expensive storm-recompute/GIC steps, and the
-source for the paper's Figure 3.
+Visualization of the VA+PJM EHV network, and the source for the paper's
+Figure 3.
+
+DELIBERATELY DOES NOT READ scripts/build_virginia_network.py's own output
+(va_pjm_lines.geojson / va_pjm_substations.geojson) ANY MORE. Those two
+files are overwritten unconditionally on every run of that script (only
+its raw-OSM-download cache is checked before re-fetching), so they can
+silently drift out of sync with the network actually in use everywhere
+else -- confirmed against real data: a re-run of build_virginia_network.py
+produced 2,226 substations / 3,880 lines, while va_network_graph.pkl /
+va_topology_metrics.csv (built earlier by build_virginia_network_graph.py,
+and what every other script -- centrality, islanding, GIC -- actually
+reads) reflect 2,624 substations / 4,586 lines, matching the paper's
+already-published 2,728/4,587. Reading transmission_lines.csv and
+va_topology_metrics.csv here instead -- the exact same two files
+viz/plot_island_maps.py already reads for the same reason -- means this
+figure is always consistent with the real pipeline output, regardless of
+whether build_virginia_network.py's own snapshot ever drifts again.
 
 Three fixes applied per paper review feedback (Ed's Oct 2026 review):
 - Filled PJM-state polygons as an actual basemap layer (zorder=1, light
@@ -24,12 +38,15 @@ Usage:
 """
 
 import numpy as np
+import pandas as pd
 import matplotlib.pyplot as plt
 import geopandas as gpd
+from shapely import wkt
 
 from configs import setup_logger, setup_matplotlib
 from configs.virginia_config import (
     VA_NETWORK_DIR,
+    VA_ADMITTANCE_DIR,
     VA_FIGURES_DIR,
     get_pjm_geodataframe,
     get_virginia_boundary,
@@ -45,16 +62,24 @@ VOLTAGE_COLORS = {765: "#d73027", 500: "#fc8d59", 345: "#fee090", 230: "#91bfdb"
 def main():
     setup_matplotlib()
 
-    lines_path = VA_NETWORK_DIR / "va_pjm_lines.geojson"
-    subs_path = VA_NETWORK_DIR / "va_pjm_substations.geojson"
-    if not lines_path.exists() or not subs_path.exists():
+    topo_path = VA_NETWORK_DIR / "va_topology_metrics.csv"
+    lines_path = VA_ADMITTANCE_DIR / "transmission_lines.csv"
+    if not topo_path.exists() or not lines_path.exists():
         raise FileNotFoundError(
-            f"Missing {lines_path} or {subs_path}. Run "
-            "scripts/build_virginia_network.py first."
+            f"Missing {topo_path} or {lines_path}. Run "
+            "scripts/build_virginia_network_graph.py and "
+            "scripts/build_admittance_matrix.py first."
         )
 
-    lines = gpd.read_file(lines_path)
-    subs = gpd.read_file(subs_path)
+    topo = pd.read_csv(topo_path)
+    subs = gpd.GeoDataFrame(
+        topo, geometry=gpd.points_from_xy(topo["longitude"], topo["latitude"]), crs="EPSG:4326"
+    )
+
+    lines_df = pd.read_csv(lines_path)
+    lines_df["geometry"] = lines_df["geometry"].apply(wkt.loads)
+    lines = gpd.GeoDataFrame(lines_df, geometry="geometry", crs="EPSG:4326")
+    lines = lines.rename(columns={"V": "VOLTAGE"})
 
     fig = plt.figure(figsize=(12, 9))
     # Main axes claims a fixed-width left allocation, leaving room on the
