@@ -138,6 +138,26 @@ def savefig_with_retry(fig, path, attempts: int = 4, delay_seconds: float = 2.0,
     raise last_err
 
 
+def pil_save_with_retry(img, path, attempts: int = 4, delay_seconds: float = 2.0, **save_kwargs):
+    """Same transient-Windows-lock retry as savefig_with_retry above, but
+    for a PIL Image's own .save() -- hit directly by
+    viz/combine_island_maps.py's canvas.save() against real data on the
+    same Windows machine, same [Errno 22] Invalid argument. Same fix for
+    the same reason: a short retry-with-delay, re-raising on the last
+    attempt so a genuine, persistent failure still surfaces."""
+    last_err = None
+    for attempt in range(1, attempts + 1):
+        try:
+            img.save(path, **save_kwargs)
+            return
+        except OSError as e:
+            last_err = e
+            logger.warning(f"Image.save({path}) failed on attempt {attempt}/{attempts}: {e}")
+            if attempt < attempts:
+                time.sleep(delay_seconds)
+    raise last_err
+
+
 def setup_map(ax, spatial_extent=[-120, -75, 25, 50]):
     """Setup map features and styling."""
     ax.set_extent(spatial_extent, ccrs.PlateCarree())

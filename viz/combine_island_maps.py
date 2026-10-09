@@ -29,6 +29,7 @@ from PIL import Image, ImageDraw, ImageFont
 from configs import setup_logger
 from configs.virginia_config import VA_FIGURES_DIR
 from viz.plot_island_maps import PAPER_ISLAND_LABELS
+from viz.plot_utils import pil_save_with_retry
 
 logger = setup_logger(log_file="logs/combine_island_maps.log")
 
@@ -81,7 +82,7 @@ def build_layout(paths, labels, out_path):
         canvas.paste(resized, (0, y))
         y += h + GAP_PX
 
-    canvas.save(out_path, dpi=(DPI, DPI))
+    pil_save_with_retry(canvas, out_path, dpi=(DPI, DPI))
     logger.info(
         f"Saved {out_path} ({canvas_w/DPI:.2f}in x {canvas_h/DPI:.2f}in"
         f"{', scaled to fit 7x10in budget' if scale < 1.0 else ''})"
