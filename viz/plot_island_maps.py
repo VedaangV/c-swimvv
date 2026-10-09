@@ -106,7 +106,10 @@ def load_transmission_lines() -> gpd.GeoDataFrame:
     return df
 
 
-def plot_one_island(island_id: str, coords: pd.DataFrame, lines: gpd.GeoDataFrame, labels: dict, va_boundary):
+def plot_one_island(
+    island_id: str, coords: pd.DataFrame, lines: gpd.GeoDataFrame, labels: dict, va_boundary,
+    show_inset: bool = True,
+):
     island = load_island(island_id)
     members = [str(m) for m in island["members"]]
     boundary_line_ids = {str(x) for x in island["boundary_line_ids"]}
@@ -152,16 +155,17 @@ def plot_one_island(island_id: str, coords: pd.DataFrame, lines: gpd.GeoDataFram
     fig = plt.figure(figsize=(10, 8))
     # Main panel's allocated box leaves the right ~1/3 of the figure free
     # for the locator inset (added below, after the main panel is fully
-    # configured). An aspect-locked axes (see set_aspect below) can only
-    # ever SHRINK within this allocation to satisfy the data's aspect
-    # ratio, never grow past it -- so reserving this much width up front
-    # guarantees the inset always has room, regardless of how tall/narrow
-    # a given island's own zoomed extent turns out to be. The inset itself
-    # is positioned against the main panel's ACTUAL post-aspect box
-    # (queried below, after a forced draw), not this pre-guessed rect --
-    # that's what keeps it snug against the main map instead of leaving a
-    # fixed, sometimes-too-large gap.
-    ax = fig.add_axes([0.07, 0.09, 0.60, 0.86])
+    # configured) ONLY when show_inset is True. An aspect-locked axes (see
+    # set_aspect below) can only ever SHRINK within this allocation to
+    # satisfy the data's aspect ratio, never grow past it -- so reserving
+    # this much width up front guarantees the inset always has room,
+    # regardless of how tall/narrow a given island's own zoomed extent
+    # turns out to be. The inset itself is positioned against the main
+    # panel's ACTUAL post-aspect box (queried below, after a forced draw),
+    # not this pre-guessed rect -- that's what keeps it snug against the
+    # main map instead of leaving a fixed, sometimes-too-large gap. With
+    # no inset, the main panel just claims the whole figure instead.
+    ax = fig.add_axes([0.07, 0.09, 0.60, 0.86]) if show_inset else fig.add_axes([0.09, 0.09, 0.86, 0.86])
 
     # Context: all nearby transmission lines, colored by voltage class, thin.
     for v in VOLTAGE_LEVELS:
@@ -218,7 +222,12 @@ def plot_one_island(island_id: str, coords: pd.DataFrame, lines: gpd.GeoDataFram
 
     # Locator panel: Virginia's outline, with a star at the island's
     # location -- a genuinely separate subplot beside the main map, not
-    # layered on top of it, so it never covers real map content.
+    # layered on top of it, so it never covers real map content. Skipped
+    # entirely when show_inset=False (e.g. when compositing all three
+    # islands into one combined figure -- all three cluster in the same
+    # central-VA/Richmond area, so repeating this panel on every one of
+    # the three is redundant; a single inset on the combined figure's
+    # caption/first panel does the same job once instead of three times).
     #
     # Positioned against the main axes' ACTUAL rendered box, not a
     # pre-guessed rect: ax.set_aspect() above shrinks ax's own box (within
@@ -229,33 +238,34 @@ def plot_one_island(island_id: str, coords: pd.DataFrame, lines: gpd.GeoDataFram
     # inset can be placed snugly against its actual right edge instead of
     # guessing a rect and leaving a gap (or overlapping) when the real box
     # turns out smaller/larger than assumed.
-    fig.canvas.draw()
-    main_pos = ax.get_position()
-    inset_gap = 0.02
-    inset_width = 0.16
-    inset_height = 0.32
-    inset_x0 = min(main_pos.x1 + inset_gap, 1.0 - inset_width - 0.01)
-    inset_y0 = main_pos.y0 + (main_pos.height - inset_height) / 2
-    inset_ax = fig.add_axes([inset_x0, inset_y0, inset_width, inset_height])
+    if show_inset:
+        fig.canvas.draw()
+        main_pos = ax.get_position()
+        inset_gap = 0.02
+        inset_width = 0.16
+        inset_height = 0.32
+        inset_x0 = min(main_pos.x1 + inset_gap, 1.0 - inset_width - 0.01)
+        inset_y0 = main_pos.y0 + (main_pos.height - inset_height) / 2
+        inset_ax = fig.add_axes([inset_x0, inset_y0, inset_width, inset_height])
 
-    va_x, va_y = va_boundary.exterior.xy if va_boundary.geom_type == "Polygon" else (None, None)
-    if va_x is not None:
-        inset_ax.plot(va_x, va_y, color="black", linewidth=0.8)
-        inset_ax.fill(va_x, va_y, color="#EEEEEE", zorder=1)
-    else:
-        for poly in va_boundary.geoms:
-            px, py = poly.exterior.xy
-            inset_ax.plot(px, py, color="black", linewidth=0.8)
-            inset_ax.fill(px, py, color="#EEEEEE", zorder=1)
-    inset_ax.scatter([(minx + maxx) / 2], [(miny + maxy) / 2], s=90, marker="*", facecolors="#d73027", edgecolors="black", linewidths=0.6, zorder=3)
-    inset_ax.set_xticks([])
-    inset_ax.set_yticks([])
-    for spine in inset_ax.spines.values():
-        spine.set_visible(False)
-    inset_ax.set_title("Location in Virginia", fontsize=9)
-    va_bounds = va_boundary.bounds
-    mean_lat_va = (va_bounds[1] + va_bounds[3]) / 2
-    inset_ax.set_aspect(1.0 / max(np.cos(np.radians(mean_lat_va)), 1e-6))
+        va_x, va_y = va_boundary.exterior.xy if va_boundary.geom_type == "Polygon" else (None, None)
+        if va_x is not None:
+            inset_ax.plot(va_x, va_y, color="black", linewidth=0.8)
+            inset_ax.fill(va_x, va_y, color="#EEEEEE", zorder=1)
+        else:
+            for poly in va_boundary.geoms:
+                px, py = poly.exterior.xy
+                inset_ax.plot(px, py, color="black", linewidth=0.8)
+                inset_ax.fill(px, py, color="#EEEEEE", zorder=1)
+        inset_ax.scatter([(minx + maxx) / 2], [(miny + maxy) / 2], s=90, marker="*", facecolors="#d73027", edgecolors="black", linewidths=0.6, zorder=3)
+        inset_ax.set_xticks([])
+        inset_ax.set_yticks([])
+        for spine in inset_ax.spines.values():
+            spine.set_visible(False)
+        inset_ax.set_title("Location in Virginia", fontsize=9)
+        va_bounds = va_boundary.bounds
+        mean_lat_va = (va_bounds[1] + va_bounds[3]) / 2
+        inset_ax.set_aspect(1.0 / max(np.cos(np.radians(mean_lat_va)), 1e-6))
 
     out_path = VA_FIGURES_DIR / f"va_island_{paper_label.lower()}_map.png"
     savefig_with_retry(fig, out_path, dpi=300, bbox_inches="tight")
@@ -267,7 +277,7 @@ def plot_one_island(island_id: str, coords: pd.DataFrame, lines: gpd.GeoDataFram
     return member_names
 
 
-def main(island_ids):
+def main(island_ids, show_inset: bool = True):
     setup_matplotlib()
     VA_FIGURES_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -278,7 +288,7 @@ def main(island_ids):
 
     all_names = {}
     for island_id in island_ids:
-        all_names[island_id] = plot_one_island(island_id, coords, lines, labels, va_boundary)
+        all_names[island_id] = plot_one_island(island_id, coords, lines, labels, va_boundary, show_inset=show_inset)
 
     logger.info("Summary of island member names:")
     for island_id, names in all_names.items():
@@ -289,5 +299,10 @@ def main(island_ids):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Zoomed island map + Virginia locator inset, one figure per island.")
     parser.add_argument("--island", type=str, nargs="+", default=["a"], help="One or more island ids, e.g. --island a g o")
+    parser.add_argument(
+        "--no-inset", action="store_true",
+        help="Skip the 'Location in Virginia' locator panel (e.g. when compositing all islands into "
+             "one combined figure, where repeating the same near-identical inset on every panel is redundant).",
+    )
     args = parser.parse_args()
-    main(island_ids=args.island)
+    main(island_ids=args.island, show_inset=not args.no_inset)
