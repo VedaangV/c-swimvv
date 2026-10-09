@@ -73,20 +73,6 @@ PAPER_ISLAND_LABELS = {"a": "A", "g": "B", "o": "C"}
 ZOOM_PAD_FRACTION = 0.5
 ZOOM_PAD_MIN_DEG = 0.06
 
-# Real islands' own members/cut-line geometry can be extremely elongated
-# in one direction (e.g. a cut spanning a much larger north-south than
-# east-west distance, or vice versa) -- left alone, that produces panels
-# of wildly different shapes (one very tall, another very wide), which is
-# why a composite figure stacking/arranging them let one panel dwarf the
-# others. Forcing every island's zoom window to this exact aspect ratio
-# (by padding whichever dimension is too short, never cropping the longer
-# one) makes all three panels identically shaped, so they can simply be
-# listed one after another at a common width with no panel-specific
-# layout math -- this is a presentation choice about how much surrounding
-# context to show, not a change to what geographic area actually gets
-# analyzed anywhere else in the pipeline.
-ZOOM_TARGET_ASPECT = 1.0
-
 
 def load_island(island_id: str) -> dict:
     import json
@@ -153,29 +139,6 @@ def plot_one_island(
     pad_y = max((maxy - miny) * ZOOM_PAD_FRACTION, ZOOM_PAD_MIN_DEG)
     ext_minx, ext_maxx = minx - pad_x, maxx + pad_x
     ext_miny, ext_maxy = miny - pad_y, maxy + pad_y
-
-    # Force the zoom window to exactly ZOOM_TARGET_ASPECT (see comment
-    # above) by widening whichever dimension is too short relative to the
-    # target, centered on the window's own midpoint -- never shrinks/crops
-    # the longer dimension, so the real cut and its surrounding context
-    # are always fully shown; this only ever adds extra context, never
-    # removes any. Every island ends up with this identical aspect ratio.
-    mean_lat_for_aspect = (ext_miny + ext_maxy) / 2
-    lon_scale = max(np.cos(np.radians(mean_lat_for_aspect)), 1e-6)
-    equiv_width = (ext_maxx - ext_minx) * lon_scale
-    equiv_height = ext_maxy - ext_miny
-    current_aspect = equiv_width / equiv_height if equiv_height > 0 else 1.0
-    if current_aspect < ZOOM_TARGET_ASPECT:
-        # Too tall/narrow -- widen in longitude.
-        target_equiv_width = equiv_height * ZOOM_TARGET_ASPECT
-        target_width_deg = target_equiv_width / lon_scale
-        cx = (ext_minx + ext_maxx) / 2
-        ext_minx, ext_maxx = cx - target_width_deg / 2, cx + target_width_deg / 2
-    elif current_aspect > ZOOM_TARGET_ASPECT:
-        # Too wide/flat -- heighten in latitude.
-        target_height = equiv_width / ZOOM_TARGET_ASPECT
-        cy = (ext_miny + ext_maxy) / 2
-        ext_miny, ext_maxy = cy - target_height / 2, cy + target_height / 2
 
     ctx_subs = coords[
         coords["longitude"].between(ext_minx, ext_maxx) & coords["latitude"].between(ext_miny, ext_maxy)
