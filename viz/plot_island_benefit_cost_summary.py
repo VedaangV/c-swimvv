@@ -20,6 +20,17 @@ dominated by each island's tiny, very different switching-cost denominator
 cost-side differences rather than the economic story this figure exists to
 tell. Exact ratios remain in the Supporting Information tables.
 
+Each bar is drawn as a two-segment waterfall rather than a single net-only
+bar, so cost is visible too, not just the net result: a muted gray segment
+first steps left from zero by that island's one-time switching/outage cost
+(total_cost_musd -- fixed per island, the same for every scenario since
+it doesn't depend on the storm), then the island-colored segment steps
+right from there by that scenario's total benefit (total_benefit_musd),
+ending exactly at net_musd (= benefit - cost). The colored segment's own
+length is the benefit; where it ends relative to the zero line is the net
+-- both are readable off the same bar without a second axis or a separate
+cost chart.
+
 Usage:
     python viz/plot_island_benefit_cost_summary.py
     python viz/plot_island_benefit_cost_summary.py --islands a g o --variant mid_365d
@@ -42,6 +53,7 @@ logger = setup_logger(log_file="logs/plot_island_benefit_cost_summary.log")
 # -- never re-cycled if an island is dropped from the CLI args, so color
 # always means the same island across any version of this figure.
 ISLAND_COLORS = {"A": "#0072B2", "B": "#E69F00", "C": "#009E73"}
+COST_COLOR = "0.65"
 
 SCENARIO_ORDER = [
     "50-year", "75-year", "100-year", "125-year", "150-year", "175-year",
@@ -82,12 +94,23 @@ def main(island_ids=("a", "g", "o"), variant: str = "mid_365d"):
     bar_height = 0.8 / n_islands
     y_base = np.arange(n_scenarios)
 
+    cost_legend_drawn = False
     for j, label in enumerate(labels_present):
         sub = all_df[all_df["paper_label"] == label].set_index("scenario")
-        values = [sub.loc[s, "net_musd"] if s in sub.index else np.nan for s in present_scenarios]
         y = y_base - 0.4 + bar_height * (j + 0.5)
+        costs = np.array([sub.loc[s, "total_cost_musd"] if s in sub.index else np.nan for s in present_scenarios])
+        benefits = np.array([sub.loc[s, "total_benefit_musd"] if s in sub.index else np.nan for s in present_scenarios])
+
+        # Waterfall: cost segment steps left from 0, then the benefit
+        # segment steps right from -cost by the benefit amount, landing
+        # exactly on net_musd (= benefit - cost) -- see module docstring.
         ax.barh(
-            y, values, height=bar_height * 0.9, color=ISLAND_COLORS.get(label, "0.5"),
+            y, -costs, left=0, height=bar_height * 0.9, color=COST_COLOR, zorder=3,
+            label="Cost" if not cost_legend_drawn else None,
+        )
+        cost_legend_drawn = True
+        ax.barh(
+            y, benefits, left=-costs, height=bar_height * 0.9, color=ISLAND_COLORS.get(label, "0.5"),
             label=f"Island {label}", zorder=3,
         )
 
@@ -95,7 +118,7 @@ def main(island_ids=("a", "g", "o"), variant: str = "mid_365d"):
     ax.set_yticks(y_base)
     ax.set_yticklabels([SCENARIO_DISPLAY.get(s, s) for s in present_scenarios])
     ax.invert_yaxis()
-    ax.set_xlabel("Net benefit ($M, 365-day repair-duration variant)")
+    ax.set_xlabel("Cost and benefit ($M, 365-day repair-duration variant)")
     ax.set_title("Island benefit–cost by scenario")
     ax.legend(loc="lower right", fontsize=9, framealpha=0.9)
     ax.grid(axis="x", color="0.85", linewidth=0.6, zorder=0)
