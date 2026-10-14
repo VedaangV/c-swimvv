@@ -40,6 +40,7 @@ Usage:
 """
 
 import argparse
+import math
 
 import numpy as np
 import pandas as pd
@@ -67,6 +68,18 @@ SCENARIO_DISPLAY = {
     "halloween-year": "Halloween (2003)",
     "st_patricks-year": "St. Patrick's Day (2015)",
 }
+
+
+def _format_sig_figs(value: float, sig: int = 3) -> str:
+    """Format to a fixed number of significant figures with commas, never
+    scientific notation -- plain f"{v:.3g}" switches to "1.23e+03" above
+    ~1000 and f"{v:.0f}"/f"{v:.2f}" round anything under $1M straight to
+    "$0M", both of which came up across this project's real island costs
+    (some well under $1M, one in the thousands)."""
+    if value == 0:
+        return "0"
+    digits = max(sig - int(math.floor(math.log10(abs(value)))) - 1, 0)
+    return f"{round(value, digits):,.{digits}f}"
 
 
 def load_island_benefit_cost(island_id: str, variant: str) -> pd.DataFrame:
@@ -118,7 +131,7 @@ def main(island_ids=("a", "g", "o"), variant: str = "mid_365d"):
     # the axes -- using both (rather than one title with a second line)
     # keeps the cost annotation from overlapping the main title text.
     fig.suptitle("Island benefit–cost by scenario", fontsize=14, y=0.995)
-    cost_line = "One-time cost: " + "   ".join(f"Island {l} ${cost_by_label[l]:,.0f}M" for l in labels_present)
+    cost_line = "One-time cost: " + "   ".join(f"Island {l} ${_format_sig_figs(cost_by_label[l])}M" for l in labels_present)
     ax.set_title(cost_line, fontsize=9, color="0.3", pad=8)
     ax.legend(loc="lower right", fontsize=9, framealpha=0.9)
     ax.grid(axis="x", color="0.85", linewidth=0.6, zorder=0)
