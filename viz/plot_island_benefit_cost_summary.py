@@ -131,7 +131,12 @@ def main(island_ids=("a", "g", "o"), variant: str = "mid_365d"):
     # the axes -- using both (rather than one title with a second line)
     # keeps the cost annotation from overlapping the main title text.
     fig.suptitle("Island benefit–cost by scenario", fontsize=14, y=0.995)
-    cost_line = "One-time cost: " + "   ".join(f"Island {l} ${_format_sig_figs(cost_by_label[l])}M" for l in labels_present)
+    # Mathtext bold (\mathbf) for just the dollar figures, not the
+    # "Island X" labels -- a plain fontweight="bold" on the whole Text
+    # artist would bold everything, including the "One-time cost:" lead-in.
+    cost_line = "One-time cost: " + "   ".join(
+        rf"Island {l} $\mathbf{{\${_format_sig_figs(cost_by_label[l])}M}}$" for l in labels_present
+    )
     ax.set_title(cost_line, fontsize=9, color="0.3", pad=8)
     ax.legend(loc="lower right", fontsize=9, framealpha=0.9)
     ax.grid(axis="x", color="0.85", linewidth=0.6, zorder=0)
