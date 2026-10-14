@@ -45,6 +45,7 @@ import math
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+from matplotlib.offsetbox import AnchoredOffsetbox, HPacker, TextArea
 
 from configs import setup_logger, setup_matplotlib
 from configs.virginia_config import VA_ECON_DIR, VA_FIGURES_DIR
@@ -131,13 +132,24 @@ def main(island_ids=("a", "g", "o"), variant: str = "mid_365d"):
     # the axes -- using both (rather than one title with a second line)
     # keeps the cost annotation from overlapping the main title text.
     fig.suptitle("Island benefit–cost by scenario", fontsize=14, y=0.995)
-    # Mathtext bold (\mathbf) for just the dollar figures, not the
-    # "Island X" labels -- a plain fontweight="bold" on the whole Text
-    # artist would bold everything, including the "One-time cost:" lead-in.
-    cost_line = "One-time cost: " + "   ".join(
-        rf"Island {l} $\mathbf{{\${_format_sig_figs(cost_by_label[l])}M}}$" for l in labels_present
+    ax.set_title(" ", fontsize=9, pad=8)  # reserve the same vertical gap the cost annotation sits in
+    # A single Text artist can't mix colors, so "Island X -" (gray) and
+    # the dollar figure (black) are built as separate TextAreas and
+    # packed left-to-right with HPacker, then anchored just above the
+    # axes -- this is matplotlib's own mechanism for mixed-style runs of
+    # text, not a manual position hack.
+    pieces = [TextArea("One-time cost:  ", textprops=dict(color="0.3", size=9))]
+    for idx, l in enumerate(labels_present):
+        pieces.append(TextArea(f"Island {l} - ", textprops=dict(color="0.3", size=9)))
+        pieces.append(TextArea(f"${_format_sig_figs(cost_by_label[l])}M", textprops=dict(color="black", size=9)))
+        if idx < len(labels_present) - 1:
+            pieces.append(TextArea("   ", textprops=dict(size=9)))
+    cost_box = HPacker(children=pieces, align="center", pad=0, sep=0)
+    anchored = AnchoredOffsetbox(
+        loc="lower center", child=cost_box, frameon=False,
+        bbox_to_anchor=(0.5, 1.0), bbox_transform=ax.transAxes, borderpad=0.3,
     )
-    ax.set_title(cost_line, fontsize=9, color="0.3", pad=8)
+    ax.add_artist(anchored)
     ax.legend(loc="lower right", fontsize=9, framealpha=0.9)
     ax.grid(axis="x", color="0.85", linewidth=0.6, zorder=0)
     ax.set_axisbelow(True)
