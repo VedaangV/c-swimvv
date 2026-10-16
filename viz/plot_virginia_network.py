@@ -27,7 +27,10 @@ Three fixes applied per paper review feedback (Ed's Oct 2026 review):
   draw, then position the inset against the main axes' ACTUAL post-aspect
   rendered box (ax.get_position()) rather than a pre-guessed rect, so it
   sits snug regardless of how tall/wide the PJM footprint's own aspect
-  ratio turns out to be.
+  ratio turns out to be. The inset sits INSIDE the main map's own box, in
+  its top-right corner, rather than beside it in a separate reserved
+  column -- a white backing patch behind it keeps it legible over
+  whatever map content (lines, states) happens to fall underneath.
 - Substations are now in the legend (previous version's subs.plot() call
   had no label=, so matplotlib silently excluded it from ax.legend()) and
   smaller/lighter so they read as context rather than competing visually
@@ -82,12 +85,10 @@ def main():
     lines = lines.rename(columns={"V": "VOLTAGE"})
 
     fig = plt.figure(figsize=(12, 9))
-    # Main axes claims a fixed-width left allocation, leaving room on the
-    # right for the inset -- same reasoning as plot_island_maps.py: an
-    # aspect-locked axes (set_aspect below) can only ever shrink within
-    # this allocation, never grow past it, so the inset is guaranteed
-    # space regardless of the PJM footprint's own aspect ratio.
-    ax = fig.add_axes([0.08, 0.08, 0.66, 0.86])
+    # Main axes now claims the full figure width -- the inset is placed
+    # inside this box (top-right corner, see below) instead of beside it,
+    # so there's no need to reserve a separate column for it any more.
+    ax = fig.add_axes([0.08, 0.08, 0.88, 0.86])
 
     pjm_states = get_pjm_geodataframe()
     # Basemap layer: filled state polygons, not just boundary outlines --
@@ -121,16 +122,33 @@ def main():
     line_handles, line_labels = ax.get_legend_handles_labels()
     ax.legend(handles=line_handles, labels=line_labels, loc="lower left", fontsize=8, title="Line voltage")
 
-    # Locator inset: PJM footprint outline with Virginia highlighted,
-    # positioned against the main axes' ACTUAL rendered box (post-draw),
-    # not a pre-guessed rect -- see module docstring and
-    # viz/plot_island_maps.py's identical pattern for why.
+    # Locator inset: PJM footprint outline with Virginia highlighted, now
+    # positioned INSIDE the main axes' own box (top-right corner) instead
+    # of beside it -- still anchored against the main axes' ACTUAL
+    # rendered box (post-draw), not a pre-guessed rect, same reasoning as
+    # viz/plot_island_maps.py's identical pattern.
     fig.canvas.draw()
     main_pos = ax.get_position()
-    inset_width, inset_height = 0.22, 0.30
-    inset_x0 = min(main_pos.x1 + 0.02, 1.0 - inset_width - 0.01)
-    inset_y0 = main_pos.y0 + (main_pos.height - inset_height) / 2
-    inset_ax = fig.add_axes([inset_x0, inset_y0, inset_width, inset_height])
+    inset_width, inset_height = 0.20, 0.24
+    inset_pad = 0.012
+    inset_title_h = 0.035  # headroom for the inset's own title, below, not above, the main axes' top edge
+    inset_x0 = main_pos.x1 - inset_width - inset_pad
+    inset_y0 = main_pos.y1 - inset_height - inset_pad - inset_title_h
+    inset_ax = fig.add_axes([inset_x0, inset_y0, inset_width, inset_height], zorder=10)
+
+    # A white backing patch (slightly larger than the inset's own box,
+    # including room for its title above) keeps the inset legible over
+    # whatever map content -- lines, state fills -- falls underneath it.
+    # Sized to stay entirely within the main axes' top edge (main_pos.y1),
+    # so it never overlaps the main title that sits above that edge.
+    backing_pad = 0.008
+    fig.patches.append(
+        plt.Rectangle(
+            (inset_x0 - backing_pad, inset_y0 - backing_pad),
+            inset_width + 2 * backing_pad, inset_height + 2 * backing_pad + inset_title_h,
+            transform=fig.transFigure, facecolor="white", edgecolor="0.4", linewidth=0.8, zorder=9,
+        )
+    )
 
     us_states = _load_states()
     us_states.plot(ax=inset_ax, color="#eeeeee", edgecolor="0.6", linewidth=0.4, zorder=1)
@@ -145,7 +163,7 @@ def main():
     inset_ax.set_yticks([])
     for spine in inset_ax.spines.values():
         spine.set_visible(False)
-    inset_ax.set_title("Location in the PJM footprint", fontsize=9)
+    inset_ax.set_title("Location in the PJM footprint", fontsize=8, pad=4)
     inset_mean_lat = (conus_bounds[1] + conus_bounds[3]) / 2
     inset_ax.set_aspect(1.0 / max(np.cos(np.radians(inset_mean_lat)), 1e-6))
 
