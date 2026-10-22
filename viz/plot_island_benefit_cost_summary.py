@@ -53,10 +53,16 @@ from viz.plot_utils import savefig_with_retry
 
 logger = setup_logger(log_file="logs/plot_island_benefit_cost_summary.log")
 
-# Okabe-Ito colorblind-safe triad, assigned by fixed island identity (A/B/C)
-# -- never re-cycled if an island is dropped from the CLI args, so color
-# always means the same island across any version of this figure.
-ISLAND_COLORS = {"A": "#0072B2", "B": "#E69F00", "C": "#009E73"}
+# Assigned by fixed island identity (A/B/C) -- never re-cycled if an
+# island is dropped from the CLI args, so color always means the same
+# island across any version of this figure.
+ISLAND_COLORS = {"A": "#E41A1C", "B": "#FF8C00", "C": "#FFD700"}
+
+TITLE_FONTSIZE = 20
+SUBTITLE_FONTSIZE = 13
+AXIS_LABEL_FONTSIZE = 15
+TICK_LABEL_FONTSIZE = 14
+LEGEND_FONTSIZE = 13
 
 SCENARIO_ORDER = [
     "50-year", "75-year", "100-year", "125-year", "150-year", "175-year",
@@ -104,7 +110,7 @@ def main(island_ids=("a", "g", "o"), variant: str = "mid_365d"):
     n_scenarios = len(present_scenarios)
     n_islands = len(labels_present)
 
-    fig, ax = plt.subplots(figsize=(9, 0.55 * n_scenarios + 1.5))
+    fig, ax = plt.subplots(figsize=(11, 0.65 * n_scenarios + 1.8))
 
     bar_height = 0.8 / n_islands
     y_base = np.arange(n_scenarios)
@@ -124,18 +130,29 @@ def main(island_ids=("a", "g", "o"), variant: str = "mid_365d"):
 
     ax.axvline(0, color="0.3", linewidth=0.8, zorder=2)
     ax.set_yticks(y_base)
-    ax.set_yticklabels([SCENARIO_DISPLAY.get(s, s) for s in present_scenarios])
+    ax.set_yticklabels([SCENARIO_DISPLAY.get(s, s) for s in present_scenarios], fontsize=TICK_LABEL_FONTSIZE)
+    ax.tick_params(axis="x", labelsize=TICK_LABEL_FONTSIZE)
     ax.invert_yaxis()
-    ax.set_xlabel("Net benefit ($M, 365-day repair-duration variant)")
+    ax.set_xlabel(
+        "Net benefit ($M, 365-day repair-duration variant)",
+        fontsize=AXIS_LABEL_FONTSIZE, fontweight="bold",
+    )
     # fig.suptitle sits above the whole figure, ax.set_title right above
     # the axes -- using both (rather than one title with a second line)
     # keeps the cost annotation from overlapping the main title text.
-    fig.suptitle("Island benefit–cost by scenario", fontsize=14, y=0.995)
-    cost_line = "One-time cost:  " + "   ".join(
+    fig.suptitle("Island benefit–cost by scenario", fontsize=TITLE_FONTSIZE, fontweight="bold", y=0.995)
+    # "Cost per storm" (not "one-time cost") -- total_cost_musd already
+    # bakes in SWITCHING_EVENTS_PER_STORM=2 (compute_island_benefit_cost.py:
+    # the boundary lines get opened before the storm's peak-risk window AND
+    # reclosed after, two separate switching actions), so "one-time" was
+    # being misread as "a single switching action" when it actually meant
+    # "incurred once per storm, not daily like the benefit". Spelling out
+    # "both switching events" removes that ambiguity.
+    cost_line = "Cost per storm (both switching events):  " + "   ".join(
         f"Island {l} - ${_format_sig_figs(cost_by_label[l])}M" for l in labels_present
     )
-    ax.set_title(cost_line, fontsize=9, color="black", pad=8)
-    ax.legend(loc="lower right", fontsize=9, framealpha=0.9)
+    ax.set_title(cost_line, fontsize=SUBTITLE_FONTSIZE, color="black", pad=10)
+    ax.legend(loc="lower right", fontsize=LEGEND_FONTSIZE, framealpha=0.9)
     ax.grid(axis="x", color="0.85", linewidth=0.6, zorder=0)
     ax.set_axisbelow(True)
 
