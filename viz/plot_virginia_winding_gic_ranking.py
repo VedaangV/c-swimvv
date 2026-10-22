@@ -121,7 +121,7 @@ def main(period: str = "100", top_n: int = TOP_N, scale: str = "linear"):
     mean_col, p95_col = _find_hazard_columns(summary.columns, period)
     logger.info(f"Using columns: mean={mean_col!r}, p95={p95_col!r}")
 
-    labels = _load_substation_labels()
+    labels = _load_substation_labels(include_coords=True)
     summary["display_name"] = summary["sub_id"].map(labels).fillna(summary["sub_id"])
     # Prepend the override name but keep the coordinates already on the
     # label (coord_key itself) -- "Chesterfield County substation

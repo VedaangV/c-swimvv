@@ -56,7 +56,7 @@ TOP_N_LABELED = 10
 TOP_N_BAR = 15
 
 
-def _load_substation_labels() -> dict:
+def _load_substation_labels(include_coords: bool = False) -> dict:
     """sub_id (SS_ID) -> a human-readable label.
 
     Priority for the name portion: (1) a real name from an external
@@ -74,9 +74,13 @@ def _load_substation_labels() -> dict:
     "absence isn't an error" pattern used throughout this pipeline's
     optional data sources.
 
-    Every label -- named or not -- has "(lat, lon)" appended, so a reader
-    can always place a substation on a map even when the name is just a
-    county/city (several per county) rather than a specific address.
+    include_coords=True appends "(lat, lon)" to every label, named or
+    not -- useful for a chart like viz/plot_virginia_winding_gic_ranking.py
+    where the label is the only place a reader can see where a substation
+    is. Left False by default because this function's OTHER caller (this
+    module's own main(), below) already annotates each label directly at
+    its point on a map -- appending the same coordinates there would just
+    repeat, right next to the point, the location the point already shows.
     """
     external_names = {}
     names_path = VA_NETWORK_DIR / "va_substation_names.csv"
@@ -98,7 +102,7 @@ def _load_substation_labels() -> dict:
     unnamed = []  # (ss_id, lat, lon), resolved against counties in one batched sjoin below
     for _, row in ss_df.iterrows():
         ss_id = str(row["SS_ID"])
-        coord_suffix = f" ({row['lat']:.2f}, {row['lon']:.2f})"
+        coord_suffix = f" ({row['lat']:.2f}, {row['lon']:.2f})" if include_coords else ""
 
         if ss_id in external_names and pd.notna(external_names[ss_id]):
             labels[ss_id] = str(external_names[ss_id]).strip() + coord_suffix
