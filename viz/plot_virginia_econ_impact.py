@@ -40,7 +40,7 @@ SCENARIOS = ["100-year", "150-year", "200-year", "250-year"]
 ECON_PALETTES = {
     "ghosh": {"direct": "darkred", "indirect": "lightcoral", "label": "Ghosh (supply-driven)"},
     "leontief_cons": {"direct": "#0072B2", "indirect": "#56B4E9", "label": "Leontief consumption"},
-    "leontief_cp": {"direct": "#009E73", "indirect": "#8FD9B6", "label": "Leontief consumption + production"},
+    "leontief_cp": {"direct": "#E69F00", "indirect": "#FFCC80", "label": "Leontief consumption + production"},
 }
 
 RESULT_FILES = {
