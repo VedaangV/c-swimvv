@@ -122,7 +122,7 @@ def main(island_ids=("a", "g", "o"), variant: str = "mid_365d"):
         values = [sub.loc[s, "net_musd"] if s in sub.index else np.nan for s in present_scenarios]
         ax.barh(
             y, values, height=bar_height * 0.9, color=ISLAND_COLORS.get(label, "0.5"),
-            label=f"Island {label}", zorder=3,
+            edgecolor="black", linewidth=1.0, label=f"Island {label}", zorder=3,
         )
         # total_cost_musd is fixed per island (same for every scenario),
         # so one representative value is enough -- see module docstring.
