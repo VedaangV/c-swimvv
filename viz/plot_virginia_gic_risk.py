@@ -55,6 +55,26 @@ RANK_COL_P95 = "GIC_100_p95"
 TOP_N_LABELED = 10
 TOP_N_BAR = 15
 
+# Manual stand-in for substations that still fall back to bare
+# coordinates after every automatic tier (external name, OSM SS_NAME,
+# county/city reverse-geocode) -- either tl_2022_us_county.zip hasn't
+# been fetched on this machine, or (rarely) a point lands outside every
+# county polygon. Keyed on the exact "(lat, lon)" string the coordinate-
+# only fallback produces. These are APPROXIMATE placements from general
+# Virginia geography, not a verified geocode -- replace with real names
+# (or let the county reverse-geocode take over once tl_2022_us_county.zip
+# is fetched) when available; flag any that look wrong. Shared by every
+# figure that calls _load_substation_labels(), not just one script's own
+# chart, so a substation gets the same stand-in name everywhere it shows up.
+COORD_NAME_OVERRIDES = {
+    "(37.25, -77.61)": "Chesterfield County",
+    "(37.45, -77.63)": "Chesterfield County",
+    "(37.59, -77.39)": "New Kent County",
+    "(37.78, -77.55)": "Hanover County",
+    "(36.86, -81.42)": "Smyth County (AEP)",
+    "(37.25, -77.18)": "Prince George County",
+}
+
 
 def _load_substation_labels(include_coords: bool = False) -> dict:
     """sub_id (SS_ID) -> a human-readable label.
@@ -137,12 +157,24 @@ def _load_substation_labels(include_coords: bool = False) -> dict:
 
     for ss_id, lat, lon in unnamed:
         county = county_names.get(ss_id)
+        # coord_str is always computed (both as the override dict's key,
+        # and as the absolute-last-resort label), but only INCLUDED in
+        # the final label when include_coords=True -- same gating as the
+        # named tiers above, and for the same reason: a caller annotating
+        # directly at the point (e.g. this module's own map, or
+        # viz/plot_island_maps.py) wants just the name, not the name
+        # plus the coordinates its own point already shows.
+        coord_str = f"({lat:.2f}, {lon:.2f})"
+        coord_suffix = f" {coord_str}" if include_coords else ""
         if pd.notna(county):
-            labels[ss_id] = f"{county} ({lat:.2f}, {lon:.2f})"
+            labels[ss_id] = f"{county}{coord_suffix}"
+        elif coord_str in COORD_NAME_OVERRIDES:
+            labels[ss_id] = f"{COORD_NAME_OVERRIDES[coord_str]}{coord_suffix}"
         else:
-            # No real name, and either no county match or the county
-            # polygons aren't available at all -- coordinates alone.
-            labels[ss_id] = f"({lat:.2f}, {lon:.2f})"
+            # No real name, no county match, and no manual override --
+            # coordinates alone (always shown here regardless of
+            # include_coords, since it's the only identifying info at all).
+            labels[ss_id] = coord_str
 
     return labels
 
