@@ -68,11 +68,13 @@ LABEL_WRAP_WIDTH = 32
 # Manual stand-in for substations _load_substation_labels() still falls
 # back to bare coordinates for (no real name from any source, and no VA
 # county/city match -- see that function's docstring for why). Keyed on
-# the exact "(lat, lon)" fallback string it produces. These are
-# APPROXIMATE placements from general Virginia geography, not a verified
-# geocode -- replace with real names (or let the county reverse-geocode
-# in _load_substation_labels() take over, e.g. once tl_2022_us_county.zip
-# is fetched) when available; flag any that look wrong.
+# the exact "(lat, lon)" fallback string it produces; the coordinates are
+# kept and the name is prepended (not replaced), same "name (lat, lon)"
+# convention _load_substation_labels() uses for every other tier. These
+# names are APPROXIMATE placements from general Virginia geography, not
+# a verified geocode -- replace with real names (or let the county
+# reverse-geocode in _load_substation_labels() take over, e.g. once
+# tl_2022_us_county.zip is fetched) when available; flag any that look wrong.
 COORD_NAME_OVERRIDES = {
     "(37.25, -77.61)": "Chesterfield County substation",
     "(37.59, -77.39)": "New Kent County substation",
@@ -121,7 +123,12 @@ def main(period: str = "100", top_n: int = TOP_N, scale: str = "linear"):
 
     labels = _load_substation_labels()
     summary["display_name"] = summary["sub_id"].map(labels).fillna(summary["sub_id"])
-    summary["display_name"] = summary["display_name"].replace(COORD_NAME_OVERRIDES)
+    # Prepend the override name but keep the coordinates already on the
+    # label (coord_key itself) -- "Chesterfield County substation
+    # (37.25, -77.61)", not a name-only replacement.
+    summary["display_name"] = summary["display_name"].apply(
+        lambda d: f"{COORD_NAME_OVERRIDES[d]} {d}" if d in COORD_NAME_OVERRIDES else d
+    )
 
     top = summary.sort_values(mean_col, ascending=False).head(top_n)
     order = top.iloc[::-1]  # largest at the top of a horizontal bar chart

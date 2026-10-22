@@ -59,27 +59,24 @@ TOP_N_BAR = 15
 def _load_substation_labels() -> dict:
     """sub_id (SS_ID) -> a human-readable label.
 
-    Priority: (1) a real name from an external source (scripts/fetch_
-    virginia_substation_names.py's optional va_substation_names.csv --
-    HIFLD's Electric Substations dataset, Wikidata, and/or a live OSM
-    Overpass query, nearest-neighbor matched to this project's own
-    substations); (2) OSM's own name tag from ss_df.pkl, where present;
-    (3) the Virginia county or independent city the point falls in
-    (reverse-geocoded against TIGER county polygons), plus the raw
-    coordinates; (4) coordinates alone, if even that reverse geocode isn't
-    available or the point lands outside every county polygon. Each tier
-    falls through gracefully to the next -- external names and the county
-    polygons are both optional (the fetch scripts may never have been
-    run, or a substation may not have matched within the snap tolerance),
-    same "absence isn't an error" pattern used throughout this pipeline's
+    Priority for the name portion: (1) a real name from an external
+    source (scripts/fetch_virginia_substation_names.py's optional
+    va_substation_names.csv -- HIFLD's Electric Substations dataset,
+    Wikidata, and/or a live OSM Overpass query, nearest-neighbor matched
+    to this project's own substations); (2) OSM's own name tag from
+    ss_df.pkl, where present; (3) the Virginia county or independent city
+    the point falls in (reverse-geocoded against TIGER county polygons);
+    (4) no name at all, if even that reverse geocode isn't available or
+    the point lands outside every county polygon. Each tier falls through
+    gracefully to the next -- external names and the county polygons are
+    both optional (the fetch scripts may never have been run, or a
+    substation may not have matched within the snap tolerance), same
+    "absence isn't an error" pattern used throughout this pipeline's
     optional data sources.
 
-    Tier 3's county/city name deliberately carries no operator/voltage
-    guess and no raw ID alongside it -- two distinct unnamed substations
-    landing on the exact same rounded coordinates (let alone the same
-    county) is rare enough in practice not to be worth the visual noise
-    of appending an ID to every fallback label across every figure that
-    uses this lookup.
+    Every label -- named or not -- has "(lat, lon)" appended, so a reader
+    can always place a substation on a map even when the name is just a
+    county/city (several per county) rather than a specific address.
     """
     external_names = {}
     names_path = VA_NETWORK_DIR / "va_substation_names.csv"
@@ -101,14 +98,15 @@ def _load_substation_labels() -> dict:
     unnamed = []  # (ss_id, lat, lon), resolved against counties in one batched sjoin below
     for _, row in ss_df.iterrows():
         ss_id = str(row["SS_ID"])
+        coord_suffix = f" ({row['lat']:.2f}, {row['lon']:.2f})"
 
         if ss_id in external_names and pd.notna(external_names[ss_id]):
-            labels[ss_id] = str(external_names[ss_id]).strip()
+            labels[ss_id] = str(external_names[ss_id]).strip() + coord_suffix
             continue
 
         name = row.get("SS_NAME")
         if pd.notna(name) and str(name).strip() not in ("", "Unknown"):
-            labels[ss_id] = str(name).strip()
+            labels[ss_id] = str(name).strip() + coord_suffix
             continue
 
         unnamed.append((ss_id, row["lat"], row["lon"]))
