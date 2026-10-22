@@ -45,6 +45,7 @@ from configs.virginia_config import (
     VA_NETWORK_DIR,
     VA_FIGURES_DIR,
     get_virginia_boundary,
+    get_virginia_counties,
 )
 
 logger = setup_logger(log_file="logs/plot_virginia_gic_risk.log")
@@ -63,17 +64,22 @@ def _load_substation_labels() -> dict:
     HIFLD's Electric Substations dataset, Wikidata, and/or a live OSM
     Overpass query, nearest-neighbor matched to this project's own
     substations); (2) OSM's own name tag from ss_df.pkl, where present;
-    (3) coordinates alone. Each tier falls through gracefully to the next
-    -- external names in particular are optional (the fetch script may
-    never have been run, or a given substation may not have matched within
-    the snap tolerance), same "absence isn't an error" pattern used
-    throughout this pipeline's optional data sources.
+    (3) the Virginia county or independent city the point falls in
+    (reverse-geocoded against TIGER county polygons), plus the raw
+    coordinates; (4) coordinates alone, if even that reverse geocode isn't
+    available or the point lands outside every county polygon. Each tier
+    falls through gracefully to the next -- external names and the county
+    polygons are both optional (the fetch scripts may never have been
+    run, or a substation may not have matched within the snap tolerance),
+    same "absence isn't an error" pattern used throughout this pipeline's
+    optional data sources.
 
-    The coordinates-only fallback (tier 3) deliberately carries no operator/
-    voltage guess and no raw ID -- two distinct unnamed substations landing
-    on the exact same rounded coordinates is rare enough in practice not to
-    be worth the visual noise of appending an ID to every fallback label
-    across every figure that uses this lookup.
+    Tier 3's county/city name deliberately carries no operator/voltage
+    guess and no raw ID alongside it -- two distinct unnamed substations
+    landing on the exact same rounded coordinates (let alone the same
+    county) is rare enough in practice not to be worth the visual noise
+    of appending an ID to every fallback label across every figure that
+    uses this lookup.
     """
     external_names = {}
     names_path = VA_NETWORK_DIR / "va_substation_names.csv"
@@ -92,6 +98,7 @@ def _load_substation_labels() -> dict:
         ss_df = pickle.load(f)
 
     labels = {}
+    unnamed = []  # (ss_id, lat, lon), resolved against counties in one batched sjoin below
     for _, row in ss_df.iterrows():
         ss_id = str(row["SS_ID"])
 
@@ -104,12 +111,36 @@ def _load_substation_labels() -> dict:
             labels[ss_id] = str(name).strip()
             continue
 
-        # No real name from any source -- just the coordinates, nothing
-        # else (no operator/voltage guess, no raw ID). Two distinct
-        # unnamed substations landing on the exact same rounded
-        # coordinates is rare enough in practice not to be worth the
-        # visual noise of an appended ID on every fallback label.
-        labels[ss_id] = f"({row['lat']:.2f}, {row['lon']:.2f})"
+        unnamed.append((ss_id, row["lat"], row["lon"]))
+
+    county_names = {}
+    if unnamed:
+        counties = get_virginia_counties()
+        if counties is None:
+            logger.warning(
+                f"{len(unnamed)} unnamed substation(s) falling back to coordinates alone "
+                "-- tl_2022_us_county.zip not found (run econ/preprocess/fetch_bea_census.py's "
+                "fetch_tiger_county() to enable county/city reverse geocoding)."
+            )
+        else:
+            points = gpd.GeoDataFrame(
+                {"ss_id": [sid for sid, _, _ in unnamed]},
+                geometry=gpd.points_from_xy([lon for _, _, lon in unnamed], [lat for _, lat, _ in unnamed]),
+                crs="EPSG:4326",
+            )
+            joined = gpd.sjoin(points, counties[["NAMELSAD", "geometry"]], how="left", predicate="within")
+            county_names = dict(zip(joined["ss_id"], joined["NAMELSAD"]))
+            n_matched = joined["NAMELSAD"].notna().sum()
+            logger.info(f"Reverse-geocoded {n_matched}/{len(unnamed)} unnamed substations to a county/city.")
+
+    for ss_id, lat, lon in unnamed:
+        county = county_names.get(ss_id)
+        if pd.notna(county):
+            labels[ss_id] = f"{county} ({lat:.2f}, {lon:.2f})"
+        else:
+            # No real name, and either no county match or the county
+            # polygons aren't available at all -- coordinates alone.
+            labels[ss_id] = f"({lat:.2f}, {lon:.2f})"
 
     return labels
 

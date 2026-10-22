@@ -20,9 +20,29 @@ VA_STATE_ABBR = "VA"
 # US state boundaries, already downloaded during econ preprocessing.
 _STATES_PATH = DATA_DIR / "econ_data" / "raw_econ_data" / "tl_2022_us_state.zip"
 
+# US county (and VA's independent-city) boundaries -- same TIGER vintage,
+# fetched by econ/preprocess/fetch_bea_census.py's fetch_tiger_county()
+# for the county-anchored econ pipeline and reused here for reverse-
+# geocoding a bare substation coordinate to a real place name.
+_COUNTIES_PATH = DATA_DIR / "econ_data" / "raw_econ_data" / "tl_2022_us_county.zip"
+
 
 def _load_states() -> gpd.GeoDataFrame:
     return gpd.read_file(_STATES_PATH)
+
+
+def get_virginia_counties() -> gpd.GeoDataFrame | None:
+    """Return Virginia's county and independent-city polygons (EPSG:4326),
+    NAMELSAD column holding the full "X County" / "Y city" name -- Virginia
+    has many independent cities that aren't part of any county, so NAME
+    alone ("Richmond") would be ambiguous between the city and a same-named
+    county elsewhere. Returns None if fetch_tiger_county() hasn't been run
+    yet; callers should fall back to coordinates alone in that case, same
+    as every other optional-data source in this pipeline."""
+    if not _COUNTIES_PATH.exists():
+        return None
+    counties = gpd.read_file(_COUNTIES_PATH)
+    return counties[counties["STATEFP"] == VA_FIPS].copy()
 
 
 def get_virginia_boundary():
