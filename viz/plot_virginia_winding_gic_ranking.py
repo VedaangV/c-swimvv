@@ -63,7 +63,7 @@ from viz.plot_utils import savefig_with_retry
 logger = setup_logger(log_file="logs/plot_virginia_winding_gic_ranking.log")
 
 TOP_N = 15
-LABEL_WRAP_WIDTH = 32
+LABEL_WRAP_WIDTH = 36
 
 # Manual stand-in for substations _load_substation_labels() still falls
 # back to bare coordinates for (no real name from any source, and no VA
@@ -76,17 +76,17 @@ LABEL_WRAP_WIDTH = 32
 # reverse-geocode in _load_substation_labels() take over, e.g. once
 # tl_2022_us_county.zip is fetched) when available; flag any that look wrong.
 COORD_NAME_OVERRIDES = {
-    "(37.25, -77.61)": "Chesterfield County substation",
-    "(37.59, -77.39)": "New Kent County substation",
-    "(37.78, -77.55)": "Hanover County substation",
-    "(36.86, -81.42)": "Smyth County substation (Appalachian Power)",
-    "(37.25, -77.18)": "Prince George County substation",
+    "(37.25, -77.61)": "Chesterfield County",
+    "(37.59, -77.39)": "New Kent County",
+    "(37.78, -77.55)": "Hanover County",
+    "(36.86, -81.42)": "Smyth County (AEP)",
+    "(37.25, -77.18)": "Prince George County",
 }
 
-TITLE_FONTSIZE = 18
-AXIS_LABEL_FONTSIZE = 14
-TICK_LABEL_FONTSIZE = 13
-VALUE_LABEL_FONTSIZE = 11
+TITLE_FONTSIZE = 22
+AXIS_LABEL_FONTSIZE = 17
+TICK_LABEL_FONTSIZE = 16
+VALUE_LABEL_FONTSIZE = 14
 
 
 def _find_hazard_columns(columns, period: str) -> tuple:
@@ -139,7 +139,13 @@ def main(period: str = "100", top_n: int = TOP_N, scale: str = "linear"):
     lower_err = np.zeros_like(upper_err)
 
     y = range(len(order))
-    fig, ax = plt.subplots(figsize=(15, 10))
+    # Height scales with the number of bars -- fixed at a constant tall
+    # enough for top_n=15 would just as easily UNDER-space more bars (or
+    # waste room on fewer), and bigger, bold, two-line-wrapped labels
+    # (post "make text bigger/bolder") need noticeably more per-row
+    # height than the original fontsize=8 single-line labels did, or
+    # adjacent rows' wrapped text collides.
+    fig, ax = plt.subplots(figsize=(15, max(8.0, 0.95 * top_n + 2.0)))
 
     ax.barh(
         y, mean_vals, xerr=[lower_err, upper_err], color="#d73027", ecolor="0.2",
@@ -167,23 +173,25 @@ def main(period: str = "100", top_n: int = TOP_N, scale: str = "linear"):
     for yi, (mean_v, p95_v) in enumerate(zip(mean_vals, p95_vals)):
         ax.text(
             max(mean_v, p95_v) * 1.03, yi, f"{mean_v:.1f} (p95 {p95_v:.1f})",
-            va="center", fontsize=VALUE_LABEL_FONTSIZE,
+            va="center", fontsize=VALUE_LABEL_FONTSIZE, fontweight="bold",
         )
 
     wrapped_labels = [
         "\n".join(textwrap.wrap(name, LABEL_WRAP_WIDTH)) for name in order["display_name"]
     ]
     ax.set_yticks(list(y))
-    ax.set_yticklabels(wrapped_labels, fontsize=TICK_LABEL_FONTSIZE)
+    ax.set_yticklabels(wrapped_labels, fontsize=TICK_LABEL_FONTSIZE, fontweight="bold")
     ax.tick_params(axis="x", labelsize=TICK_LABEL_FONTSIZE)
+    for tick_label in ax.get_xticklabels():
+        tick_label.set_fontweight("bold")
     scale_note = "log scale" if scale == "log" else "linear scale"
     ax.set_xlabel(
         f"Winding GIC, |A/ph| ({period}-year storm) — {scale_note}, whisker = p95",
-        fontsize=AXIS_LABEL_FONTSIZE,
+        fontsize=AXIS_LABEL_FONTSIZE, fontweight="bold",
     )
     ax.set_title(
         f"Top {len(top)} most vulnerable Virginia substations ({period}-year return period storm)",
-        fontsize=TITLE_FONTSIZE,
+        fontsize=TITLE_FONTSIZE, fontweight="bold",
     )
 
     fig.tight_layout()
