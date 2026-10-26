@@ -1,6 +1,7 @@
 """Visualization utilities for map setup and data processing."""
 
 import pickle
+import time
 
 import numpy as np
 import pandas as pd
@@ -105,6 +106,38 @@ def export_econ_comparison_table(econ_results, file_suffix=""):
     out.to_csv(out_fp, index=False)
     logger.info(f"Saved comparison table: {out_fp}")
     return out
+
+
+def savefig_with_retry(fig, path, attempts: int = 4, delay_seconds: float = 2.0, **savefig_kwargs):
+    """fig.savefig() with retries -- works around an intermittent Windows
+    OSError [Errno 22] (likely OneDrive/Defender briefly locking the file
+    as it's written). Re-raises on the last attempt."""
+    last_err = None
+    for attempt in range(1, attempts + 1):
+        try:
+            fig.savefig(path, **savefig_kwargs)
+            return
+        except OSError as e:
+            last_err = e
+            logger.warning(f"savefig({path}) failed on attempt {attempt}/{attempts}: {e}")
+            if attempt < attempts:
+                time.sleep(delay_seconds)
+    raise last_err
+
+
+def pil_save_with_retry(img, path, attempts: int = 4, delay_seconds: float = 2.0, **save_kwargs):
+    """Same retry as savefig_with_retry above, for PIL Image.save()."""
+    last_err = None
+    for attempt in range(1, attempts + 1):
+        try:
+            img.save(path, **save_kwargs)
+            return
+        except OSError as e:
+            last_err = e
+            logger.warning(f"Image.save({path}) failed on attempt {attempt}/{attempts}: {e}")
+            if attempt < attempts:
+                time.sleep(delay_seconds)
+    raise last_err
 
 
 def setup_map(ax, spatial_extent=[-120, -75, 25, 50]):

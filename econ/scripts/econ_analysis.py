@@ -1,17 +1,8 @@
 """Economic analysis module for GIC impact assessment.
-Author: Dennies Bor & Edward Oughton
 
-Runs three I-O loss models on the Monte Carlo scenario outputs from
-p_gic_files.py:
-
-    run_ghosh_value_added            Supply-driven Ghosh shock on sector VA.
-    run_leontief_consumption         Demand-driven Leontief shock on PCE +
-                                     government final demand only.
-    run_leontief_consumption_production
-                                     Demand-driven Leontief shock on PCE +
-                                     government + investment + exports.
-
-All three write CSVs with the same schema.
+Runs three I-O loss models (Ghosh value-added, Leontief consumption,
+Leontief consumption+production) on the Monte Carlo scenario outputs
+from p_gic_files.py and writes CSVs with a common schema.
 """
 
 import copy
@@ -29,6 +20,7 @@ from configs import (
     setup_logger,
     PROCESS_GND_FILES,
     get_data_dir,
+    IPOPT_EXEC,
 )
 
 from econ.scripts.l_prepr_data import load_gic_results
@@ -415,9 +407,7 @@ def run_policy(model_instance, policy_params, scenario_name="Policy Simulation")
             else:
                 logger.warning(f"Parameter {param_name} not found in model")
 
-    solver = SolverFactory(
-        "ipopt", executable="/home/pve_ubuntu/miniconda3/envs/spw-env/bin/ipopt"
-    )
+    solver = SolverFactory("ipopt", executable=IPOPT_EXEC)
     solver.options["max_iter"] = 5000
     solver.options["tol"] = 1e-6
 

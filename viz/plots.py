@@ -244,9 +244,18 @@ def plot_socio_economic_impact(
     plt.show()
 
 
-def plot_vuln_trafos(vuln_data, df_lines, file_suffix=""):
-    """Plot substations with failure probability controlling size and color."""
-    projection = ccrs.LambertConformal(central_longitude=-98, central_latitude=39.5)
+def plot_vuln_trafos(vuln_data, df_lines, file_suffix="", extent=None, projection=None):
+    """Plot substations with failure probability controlling size and color.
+
+    Legend sizes are tuned for print, and deliberately larger than the
+    actual on-map line widths (legend samples just need to be visible,
+    not to scale).
+
+    extent/projection default to CONUS (unchanged national behavior);
+    pass a tighter extent + centered projection for a regional version,
+    as viz/plot_virginia_vulnerable_trafos.py does."""
+    if projection is None:
+        projection = ccrs.LambertConformal(central_longitude=-98, central_latitude=39.5)
 
     if USE_ALPHA_BETA_SCENARIO:
         scenarios_to_plot = [
@@ -274,8 +283,8 @@ def plot_vuln_trafos(vuln_data, df_lines, file_suffix=""):
         "e_250-year-hazard A/ph": "250-year",
     }
 
-    fig = plt.figure(figsize=(10, 8))
-    gs = plt.GridSpec(2, 2, hspace=0.02, wspace=0.02, figure=fig)
+    fig = plt.figure(figsize=(13, 11))
+    gs = plt.GridSpec(2, 2, hspace=0.05, wspace=0.05, figure=fig)
     axes = [
         fig.add_subplot(gs[i, j], projection=projection)
         for i in range(2)
@@ -290,12 +299,12 @@ def plot_vuln_trafos(vuln_data, df_lines, file_suffix=""):
 
     p_bins = [0, 10, 20, 40, 50, 75, 101]
     p_labels = ["<10%", "10–20%", "20–40%", "40–50%", "50–75%", ">75%"]
-    cmap = plt.cm.get_cmap("YlOrRd", 5)
+    cmap = mpl.colormaps["YlOrRd"].resampled(5)
 
     p_colors = ["#9ca3af"] + [cmap(i) for i in range(5)]
 
     p_sizes = [5, 50, 65, 120, 160, 210]
-    p_leg_ms = [5, 6, 7, 9, 11, 12]
+    p_leg_ms = [9, 11, 13, 16, 19, 22]
     color_map = dict(zip(p_labels, p_colors))
     size_map = dict(zip(p_labels, p_sizes))
     leg_ms_map = dict(zip(p_labels, p_leg_ms))
@@ -308,8 +317,8 @@ def plot_vuln_trafos(vuln_data, df_lines, file_suffix=""):
         sc_df = vuln_data[vuln_data["scenario"] == scenario]
         p_by_sub = sc_df.groupby("sub_id")["mean_failure_prob"].mean() * 100.0
 
-        extent = [-120, -75, 25, 50]
-        ax = setup_map(ax, extent)
+        panel_extent = extent if extent is not None else [-120, -75, 25, 50]
+        ax = setup_map(ax, panel_extent)
 
         coords = all_coords.loc[all_coords.index.intersection(p_by_sub.index)].copy()
         coords["p_pct"] = p_by_sub.reindex(coords.index)
@@ -353,7 +362,7 @@ def plot_vuln_trafos(vuln_data, df_lines, file_suffix=""):
         ax.add_collection(lc)
 
         scenario_name = scenario_display_names[scenario]
-        ax.set_title(f"({chr(97 + i)}) {scenario_name} Storm", fontsize=10, loc="left")
+        ax.set_title(f"({chr(97 + i)}) {scenario_name} Storm", fontsize=16, fontweight="bold", loc="left")
 
     prob_handles = [
         Line2D(
@@ -372,24 +381,27 @@ def plot_vuln_trafos(vuln_data, df_lines, file_suffix=""):
     leg_prob = fig.legend(
         handles=prob_handles,
         loc="lower center",
-        bbox_to_anchor=(0.7, 0.02),
+        bbox_to_anchor=(0.7, 0.0),
         ncol=3,
         frameon=False,
-        fontsize=9,
-        title="Probability of failure",
-        title_fontsize=9,
-        handletextpad=0.4,
-        columnspacing=0.8,
+        fontsize=14,
+        title="Probability of Failure",
+        title_fontsize=16,
+        handletextpad=0.6,
+        columnspacing=1.4,
+        labelspacing=1.0,
     )
     fig.add_artist(leg_prob)
 
+    # legend line samples thicker than on-map widths, which are too thin to see at legend scale
+    legend_voltage_widths = {v: w * 6 for v, w in voltage_width_map.items()}
     volt_handles = [
         Line2D(
             [0],
             [0],
             color=voltage_color_map[v],
-            linewidth=voltage_width_map[v],
-            alpha=0.6,
+            linewidth=legend_voltage_widths[v],
+            alpha=0.8,
             label=f"{v} kV",
         )
         for v in voltage_levels
@@ -397,14 +409,15 @@ def plot_vuln_trafos(vuln_data, df_lines, file_suffix=""):
     leg_tl = fig.legend(
         handles=volt_handles,
         loc="lower center",
-        bbox_to_anchor=(0.3, 0.02),
+        bbox_to_anchor=(0.3, 0.0),
         ncol=3,
         frameon=False,
-        fontsize=9,
-        title="Transmission line voltages",
-        title_fontsize=9,
-        handletextpad=0.6,
-        columnspacing=0.9,
+        fontsize=14,
+        title="Transmission Line Voltages",
+        title_fontsize=16,
+        handletextpad=0.8,
+        columnspacing=1.4,
+        labelspacing=1.0,
     )
     fig.add_artist(leg_tl)
 
@@ -413,7 +426,7 @@ def plot_vuln_trafos(vuln_data, df_lines, file_suffix=""):
         ax.set_facecolor("#F0F0F0")
     fig.patch.set_facecolor("#F0F0F0")
 
-    plt.tight_layout(rect=(0, 0.14, 1, 1))
+    plt.tight_layout(rect=(0, 0.2, 1, 1))
 
     fig.savefig(
         FIGURES_DIR / f"vulnerable_trafos_{file_suffix}.pdf",
@@ -1039,7 +1052,7 @@ def create_tl_sub_visualization(gdf_sub, tl_df):
 
 def _trimmed_cmap(cmap_name="viridis", cut_low=0.1):
     """Create a trimmed colormap to avoid near-black colors at low end."""
-    base = mpl.cm.get_cmap(cmap_name)
+    base = mpl.colormaps[cmap_name]
     return mpl.colors.LinearSegmentedColormap.from_list(
         "Ebar", base(np.linspace(cut_low, 1.0, 256))
     )
@@ -1068,7 +1081,7 @@ def plot_transmission_lines(
     vmin_unsat = max(10.0, float(min_value), 0.0)
     vmax_unsat = max(1000.0, float(max_value))
 
-    base = mpl.cm.get_cmap(cmap)
+    base = mpl.colormaps[cmap]
     cmap_trim = mpl.colors.LinearSegmentedColormap.from_list(
         f"{cmap}_trimmed", base(np.linspace(0.15, 1.0, 256))
     )
@@ -1144,7 +1157,7 @@ def create_custom_colorbar_e_field(
 
     if not e_field and isinstance(getattr(obj, "norm", None), mpl.colors.LogNorm):
         cb = plt.colorbar(obj, cax=cax, label=label, orientation="vertical")
-        cb.ax.set_ylabel(title, rotation=90, labelpad=1, fontsize=8)
+        cb.ax.set_ylabel(title, rotation=90, labelpad=4, fontsize=8)
 
         ticks = [10, 100, 1000]
         labels = ["1–10", "100", r"$\geq 1000$"]
@@ -1154,29 +1167,54 @@ def create_custom_colorbar_e_field(
         return cb
 
     cb = plt.colorbar(obj, cax=cax, label=label, orientation="vertical")
-    cb.ax.set_ylabel(title, rotation=90, labelpad=1, fontsize=8)
+    cb.ax.set_ylabel(title, rotation=90, labelpad=4, fontsize=8)
 
-    custom_ticks = [1, 10, vmax]
-    if (
-        np.isfinite(current_max)
-        and current_max != vmax
-        and current_max not in custom_ticks
-    ):
-        custom_ticks.append(current_max)
-    custom_ticks = sorted(set(custom_ticks))
-    cb.set_ticks(custom_ticks)
+    # Always the same three reference ticks (1, 10, global vmax) on every
+    # panel regardless of that panel's own peak -- keeps the color scale
+    # visibly comparable across panels instead of each one looking
+    # independently scaled.
+    fixed_ticks = sorted({1, 10, vmax})
 
     def _fmt(x):
         return f"{x:.2e}" if x < 0.01 else f"{x:.0f}"
 
-    labels = [_fmt(t) for t in custom_ticks]
-    for i, t in enumerate(custom_ticks):
-        if np.isfinite(current_max) and np.isclose(t, current_max):
-            labels[i] += "*"
+    # Drop "10" when this panel's own peak lands too close to it to render
+    # both labels legibly (1 and vmax are always kept as the scale's
+    # anchors). Virginia's real peaks cluster near 12-16, close enough to
+    # "10" on the log scale that they'd otherwise overlap it.
+    if 10 in fixed_ticks and np.isfinite(current_max) and current_max > 0 and not np.isclose(current_max, 10):
+        log_span = np.log10(vmax) - np.log10(1) if vmax > 1 else 1.0
+        if abs(np.log10(current_max) - np.log10(10)) < max(0.15 * log_span, 0.10):
+            fixed_ticks = [t for t in fixed_ticks if t != 10]
+
+    cb.set_ticks(fixed_ticks)
+    labels = [_fmt(t) for t in fixed_ticks]
+
+    # This panel's own peak (current_max) is reported separately from the
+    # fixed ticks so it never competes with one for space: if it's exactly
+    # equal to the shared vmax, just mark that tick red/starred rather than
+    # draw a second annotation on top of it (a loose "close enough" check
+    # here would mislabel a real peak that just happens to be near vmax).
+    # Otherwise draw it as its own red line + label, offset from the tick labels.
+    close_to_vmax = (
+        np.isfinite(current_max) and current_max > 0 and vmax > 0
+        and np.isclose(current_max, vmax)
+    )
+    if close_to_vmax:
+        vmax_idx = fixed_ticks.index(vmax)
+        labels[vmax_idx] += "*"
+
     cb.set_ticklabels(labels)
-    for lbl, t in zip(cb.ax.get_yticklabels(), custom_ticks):
-        if np.isfinite(current_max) and np.isclose(t, current_max):
-            lbl.set_color("red")
+    if close_to_vmax:
+        for lbl, t in zip(cb.ax.get_yticklabels(), fixed_ticks):
+            if np.isclose(t, vmax):
+                lbl.set_color("red")
+    elif np.isfinite(current_max):
+        cb.ax.axhline(current_max, color="red", linewidth=1.3, clip_on=False)
+        cb.ax.text(
+            1.6, current_max, f"{_fmt(current_max)}*", transform=cb.ax.get_yaxis_transform(),
+            color="red", fontsize=8, va="center", ha="left", clip_on=False,
+        )
     cb.ax.minorticks_off()
 
     return cb
@@ -2147,7 +2185,7 @@ def create_ratio_hazard_maps(
         norm_v = mpl.colors.TwoSlopeNorm(
             vmin=vmin_v_ratio, vcenter=1.0, vmax=vmax_v_ratio
         )
-        cmap_v = plt.get_cmap("RdBu_r")
+        cmap_v = mpl.colormaps["RdBu_r"]
 
         line_segments = []
         line_colors = []
@@ -2417,7 +2455,7 @@ def create_event_ratio_maps(
         norm_v = mpl.colors.TwoSlopeNorm(
             vmin=vmin_v_ratio, vcenter=1.0, vmax=vmax_v_ratio
         )
-        cmap_v = plt.get_cmap("RdBu_r")
+        cmap_v = mpl.colormaps["RdBu_r"]
 
         line_segments = []
         line_colors = []
@@ -2494,7 +2532,7 @@ def plot_gnd_gic_panels(ds, df_substations, file_suffix=""):
 
     bin_edges = np.array([0, 20, 40, 60, 80, 100, 200, 400], dtype=float)
     bin_labels = ["<20", "20–40", "40–60", "60–80", "80–100", "100–200", "200–400"]
-    cmap_base = plt.cm.get_cmap("YlOrRd", 6)
+    cmap_base = mpl.colormaps["YlOrRd"].resampled(6)
     ylorrd6 = [cmap_base(i) for i in range(6)]
     colors_list = ["#9ca3af"] + ylorrd6
     cmap_disc = colors.ListedColormap(colors_list)
