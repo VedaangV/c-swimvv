@@ -1,9 +1,8 @@
 """
-Diagnostic: prints scripts/select_island_by_redistribution_sensitivity.py's
-seed_candidate_trace as a readable table -- the comparison across all
-evaluated seed candidates (benefit, redistribution_cost, switching_cost,
-net_score) that only ever gets saved in va_island_{id}.json, never
-printed to the console log.
+Diagnostic: prints select_island_by_redistribution_sensitivity.py's
+seed_candidate_trace as a readable table (benefit, redistribution_cost,
+switching_cost, net_score per candidate), since it's only saved in
+va_island_{id}.json and never printed to the console log.
 
 Usage:
     python scripts/show_seed_candidate_trace.py --island test_growth

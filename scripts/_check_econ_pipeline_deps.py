@@ -1,9 +1,7 @@
 """
-One-off diagnostic: check whether the heavier econ-pipeline dependencies
-(IPOPT solver, tobler/rasterio raster stack, and the NLCD raster file
-itself) are actually available on this machine before investing in a
-Virginia-scoped adaptation of econ/preprocess/p_areal_intp.py and
-econ/scripts/econ_analysis.py.
+One-off diagnostic: checks whether the heavier econ-pipeline deps (IPOPT, the
+tobler/rasterio raster stack, the NLCD raster file) are available before we
+bother adapting p_areal_intp.py / econ_analysis.py to Virginia.
 
 Usage: python scripts\\_check_econ_pipeline_deps.py
 """

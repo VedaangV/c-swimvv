@@ -1,24 +1,15 @@
 """
-Extract the Virginia+PJM subset of the already-computed US storm maxima.
+Extracts the Virginia+PJM subset of the already-computed US storm maxima.
 
-Per Dennies Bor: MT sites are never filtered for the SECS/magnetic-field
-interpolation step — that runs across all of North America exactly as the
-full US pipeline does (scripts/calc_storm_maxes.py). This script only
-extracts, by index, the per-site magnetic (B) and electric (E) field maxima
-that fall inside the PJM boundary from the already-computed US-wide arrays.
-No recomputation of B/E happens here.
+Per Dennies Bor, MT sites aren't filtered for the SECS/field-interpolation
+step -- that still runs over all of North America (calc_storm_maxes.py).
+This script just pulls out the per-site B/E field maxima that fall inside
+the PJM boundary from the US-wide arrays, by index; no recomputation.
 
-Important limitation (discovered while reading calc_storm_maxes.py, not
-anticipated by the original plan): the *line*-level voltage maxima
-(maxV_arr_testing_2.npy and the special-storm delaunay_v_*.npy files) are
-indexed against the original US EHV line set (data/grid_processed/df_lines_EHV.pkl)
-and its Delaunay interpolation weights. They cannot be subset by index for
-Virginia because scripts/build_virginia_network.py builds an entirely new
-set of transmission lines with different LINE_IDs and geometries. Per-line
-voltage maxima for the VA+PJM network are instead regenerated in
-scripts/recompute_virginia_line_voltages.py, which reuses the exact same
-calculate_maxes()/read_transmission_lines() machinery against the VA+PJM
-line set (still weighted against the full, unfiltered MT site list).
+Line-level voltage maxima can't be subset the same way -- build_virginia_
+network.py builds a new line set with different LINE_IDs/geometries than
+the US one maxV_arr_testing_2.npy is indexed against. Those get regenerated
+separately in recompute_virginia_line_voltages.py instead.
 """
 
 import pickle

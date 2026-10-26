@@ -1,15 +1,8 @@
 """
-Diagnostic for generation-anchored island selection (Phase 6 extension):
-checks whether any substation with real nearby EIA-860 generation also
-clears a meaningful SCI risk threshold, before spending an overnight
-Monte Carlo run on an island anchored there. Motivated directly by Island
-F's real result -- its generation-eligible seed pool topped out at SCI
-0.1257, ~7x below Island A/B's seed SCI (~0.85-0.9), raising the
-question of whether Virginia has any substation that's both high-risk
-(worth protecting) and generation-backed (the way NZ's Manapouri anchors
-Scenario 5), or whether those are structurally disjoint sets here. If
-they're disjoint, that's a legitimate negative result for generation-
-anchored islanding in Virginia specifically, not a bug to work around.
+Diagnostic for generation-anchored island selection: checks whether any
+substation with nearby EIA-860 generation also clears a meaningful SCI
+risk threshold, before spending an overnight Monte Carlo run on an island
+anchored there.
 
 Reports, without running any island-selection or heavy pipeline stage:
 - how many eligible substations have matched EIA-860 generation at all
@@ -17,11 +10,8 @@ Reports, without running any island-selection or heavy pipeline stage:
 - for a few SCI percentile cutoffs (p50/p75/p90/p95), how many of the
   substations above that cutoff also have generation nearby
 
-DEMAND PROXY
-------------
-Uses scripts/virginia_demand_proxy.py's population-based demand estimate
-(order-of-magnitude only, not a real load model -- see that module's
-docstring) to compute generation_covers_peak_demand_ratio per substation.
+Demand estimates come from scripts/virginia_demand_proxy.py's population-
+based proxy (order-of-magnitude only, not a real load model).
 
 Usage:
     python scripts/check_generation_sci_overlap.py

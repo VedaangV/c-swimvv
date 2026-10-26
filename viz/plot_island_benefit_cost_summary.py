@@ -1,38 +1,18 @@
 """
-Single results figure replacing the three per-island benefit-cost tables
-(Tables 5/6/7 in the paper) with one chart -- per Ed's review: "Graphs are
-better though as they show magnitudes without needing to read each number."
-The raw per-scenario numbers stay available in the paper's Supporting
-Information as the original tables; this is the main-text figure.
+Combined results figure replacing the three per-island benefit-cost
+tables (Tables 5/6/7) with one chart, per review feedback asking for
+graphs over tables. Raw numbers stay in the Supporting Information.
 
-Reads scripts/compute_island_benefit_cost.py's own output CSVs directly
-(va_island_{id}_benefit_cost.csv), filtered to the mid_365d repair-duration
-variant -- the same variant the paper's main-text tables report. One
-horizontal diverging bar per (scenario, island), grouped by scenario,
-colored by island using a fixed categorical order (A/B/C) so color always
-means the same island regardless of which islands are passed on the CLI.
+Reads scripts/compute_island_benefit_cost.py's output CSVs, filtered to
+the mid_365d variant (same as the main-text tables). One horizontal bar
+per (scenario, island), colored by a fixed island order (A/B/C) so color
+stays consistent regardless of which islands are passed on the CLI.
 
-Plots net benefit ($M), not the benefit-cost ratio -- net benefit is in a
-single consistent dollar unit across all three islands and scenarios, so
-magnitudes are directly comparable at a glance; benefit-cost ratio is
-dominated by each island's tiny, very different switching-cost denominator
-(2 vs 2 vs 4 boundary lines), so its magnitude alone would mostly reflect
-cost-side differences rather than the economic story this figure exists to
-tell. Exact ratios remain in the Supporting Information tables.
-
-Bars are net_musd, as before. Cost is reported too, but as an explicit
-numeric annotation rather than encoded in bar geometry -- an earlier
-version of this figure drew each bar as a two-segment waterfall (a gray
-cost segment, then a colored benefit segment landing on the net), which
-works only when cost and benefit are comparable in magnitude. Against
-the real data they aren't: each island's one-time switching/outage cost
-(total_cost_musd) is one to two orders of magnitude smaller than the
-per-scenario benefits, so the cost segment was too thin to see at any
-reasonable bar height -- a real scale mismatch, not a rendering bug.
-Since total_cost_musd is fixed per island (the same for every scenario,
-since it doesn't depend on the storm), it only needs to be stated once
-per island, not redrawn on every bar -- so it's printed as a one-line
-annotation instead.
+Plots net benefit ($M) rather than benefit-cost ratio, since the ratio
+is dominated by each island's very different switching-cost denominator
+and wouldn't be comparable at a glance. Cost is shown as a text
+annotation rather than a bar segment, since it's 1-2 orders of magnitude
+smaller than the benefits and would be invisible as a waterfall segment.
 
 Usage:
     python viz/plot_island_benefit_cost_summary.py
@@ -53,9 +33,7 @@ from viz.plot_utils import savefig_with_retry
 
 logger = setup_logger(log_file="logs/plot_island_benefit_cost_summary.log")
 
-# Assigned by fixed island identity (A/B/C) -- never re-cycled if an
-# island is dropped from the CLI args, so color always means the same
-# island across any version of this figure.
+# fixed per island identity, not re-cycled if an island is dropped from CLI args
 ISLAND_COLORS = {"A": "#E41A1C", "B": "#FF8C00", "C": "#FFD700"}
 
 TITLE_FONTSIZE = 20
@@ -77,11 +55,8 @@ SCENARIO_DISPLAY = {
 
 
 def _format_sig_figs(value: float, sig: int = 3) -> str:
-    """Format to a fixed number of significant figures with commas, never
-    scientific notation -- plain f"{v:.3g}" switches to "1.23e+03" above
-    ~1000 and f"{v:.0f}"/f"{v:.2f}" round anything under $1M straight to
-    "$0M", both of which came up across this project's real island costs
-    (some well under $1M, one in the thousands)."""
+    """Format to sig figs with commas, no scientific notation (`.3g` and
+    fixed-decimal formats both misbehave on this project's cost range)."""
     if value == 0:
         return "0"
     digits = max(sig - int(math.floor(math.log10(abs(value)))) - 1, 0)
@@ -124,8 +99,7 @@ def main(island_ids=("a", "g", "o"), variant: str = "mid_365d"):
             y, values, height=bar_height * 0.9, color=ISLAND_COLORS.get(label, "0.5"),
             edgecolor="black", linewidth=1.0, label=f"Island {label}", zorder=3,
         )
-        # total_cost_musd is fixed per island (same for every scenario),
-        # so one representative value is enough -- see module docstring.
+        # cost is fixed per island across scenarios, so one value is enough
         cost_by_label[label] = sub["total_cost_musd"].iloc[0]
 
     ax.axvline(0, color="0.3", linewidth=0.8, zorder=2)
@@ -137,17 +111,10 @@ def main(island_ids=("a", "g", "o"), variant: str = "mid_365d"):
         "Net benefit ($M, 365-day repair-duration variant)",
         fontsize=AXIS_LABEL_FONTSIZE, fontweight="bold",
     )
-    # fig.suptitle sits above the whole figure, ax.set_title right above
-    # the axes -- using both (rather than one title with a second line)
-    # keeps the cost annotation from overlapping the main title text.
+    # suptitle + ax title (not one title with two lines) so the cost
+    # annotation doesn't overlap the main title
     fig.suptitle("Island benefit–cost by scenario", fontsize=TITLE_FONTSIZE, fontweight="bold", y=0.995)
-    # "Cost per storm" (not "one-time cost") -- total_cost_musd already
-    # bakes in SWITCHING_EVENTS_PER_STORM=2 (compute_island_benefit_cost.py:
-    # the boundary lines get opened before the storm's peak-risk window AND
-    # reclosed after, two separate switching actions), so "one-time" was
-    # being misread as "a single switching action" when it actually meant
-    # "incurred once per storm, not daily like the benefit". Spelling out
-    # "both switching events" removes that ambiguity.
+    # "both switching events" = open + reclose around the storm window, not a single action
     cost_line = "Cost per storm (both switching events):  " + "   ".join(
         f"Island {l} - ${_format_sig_figs(cost_by_label[l])}M" for l in labels_present
     )

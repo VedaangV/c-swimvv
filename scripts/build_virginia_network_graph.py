@@ -1,37 +1,23 @@
 """
 Phase 1 of ISLANDING_MITIGATION_PLAN.md: build a substation-level network
-graph for Virginia+PJM and compute topology-criticality metrics
-(betweenness centrality, degree, articulation points) feeding the
-Substation Criticality Index in scripts/compute_virginia_criticality.py.
+graph for Virginia+PJM and compute topology-criticality metrics (betweenness
+centrality, degree, articulation points) feeding the Substation Criticality
+Index in scripts/compute_virginia_criticality.py.
 
-Built from scripts/run_virginia_admittance.py's own output --
-VA_ADMITTANCE_DIR/substation_info.csv and transmission_lines.csv -- rather
-than the raw va_pjm_lines.geojson/va_pjm_substations.geojson, so the graph's
-topology matches what the admittance/GIC solve actually sees:
+Built from run_virginia_admittance.py's substation_info.csv/
+transmission_lines.csv (not the raw geojsons) so the graph topology matches
+what the admittance/GIC solve actually sees -- buses are already remapped
+through bus_ids_map by that point, so we just invert substation_info's
+"buses" column to map bus_idx -> substation and look up each line's
+from_bus/to_bus in it.
 
-- substation_info.csv's "buses" column (a list of integer bus indices,
-  already remapped through build_admittance_matrix.py's bus_ids_map at
-  write time) tells us which bus indices belong to which substation.
-- transmission_lines.csv's from_bus/to_bus columns are in that same
-  remapped integer bus-index space (see calculate_line_resistances()).
-
-So a substation-level graph is just: invert the buses column to get
-bus_idx -> substation, then look up each transmission line's from_bus/
-to_bus in that map. No need to touch the raw
-substation_buses.pkl/bus_ids_map.pkl/sub_look_up.pkl pickles.
-
-Two real subtleties handled explicitly rather than glossed over:
-1. A transmission-line row can have both endpoints resolve to the *same*
-   substation (an internal bus-to-bus connection within one site's
-   multi-bus structure) -- these are not real inter-substation edges and
-   are dropped, with a count logged so it's not a silent loss.
-2. Two substations are frequently connected by more than one physical
-   line (parallel circuits). A simple graph would collapse these into one
-   edge, silently understating how many lines would actually need to be
-   opened to isolate that boundary. Parallel lines are aggregated onto a
-   single edge with a `line_ids` list and `n_parallel_lines` count instead
-   of being dropped, so Phase 3's min-cut cost accounting reflects the
-   real switching requirement.
+Two things handled on purpose:
+1. A line whose endpoints resolve to the same substation (internal
+   multi-bus wiring) isn't a real inter-substation edge -- dropped, with a
+   logged count.
+2. Parallel lines between the same two substations are aggregated onto one
+   edge (line_ids list + n_parallel_lines) rather than collapsed silently,
+   so Phase 3's min-cut cost accounting reflects the real switching count.
 
 Usage:
     python scripts/build_virginia_network_graph.py
@@ -132,11 +118,10 @@ def build_graph() -> nx.Graph:
 
 
 def _log_orphan_va_membership(G: nx.Graph, orphans: set) -> None:
-    """Of the substations outside the main connected component, how many
-    are actually inside Virginia? PJM spans 13 states, so an orphan being
-    out-of-state is a much smaller concern (edge-of-region data coverage)
-    than an orphan sitting inside Virginia (a substation the SCI/islanding
-    work would silently exclude)."""
+    """Of the substations outside the main connected component, how many are
+    inside Virginia? An out-of-state orphan is just edge-of-region data
+    coverage; one inside Virginia is a substation the SCI/islanding work
+    would silently drop."""
     try:
         va_boundary = get_virginia_boundary()
     except Exception as e:

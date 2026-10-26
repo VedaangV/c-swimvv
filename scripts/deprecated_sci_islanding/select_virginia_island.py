@@ -1,116 +1,64 @@
 """
-Phase 3 of ISLANDING_MITIGATION_PLAN.md: seeded greedy region-growing to
-select a specific, minimal-cut island around the highest-SCI region of
-Virginia's grid. Pure graph algorithm -- no dependency on the electrical
-solve, so it's testable/debuggable in isolation before Phase 4 touches the
-admittance pipeline.
+Seeded greedy region-growing to select a minimal-cut island around the
+highest-SCI region of Virginia's grid. Pure graph algorithm, no dependency
+on the electrical solve.
 
 ALGORITHM
 ---------
-1. Seed: argmax(SCI) among eligible substations (in va_substation_
-   criticality.csv -- already restricted to Virginia, main-connected-
-   component substations by Phase 2).
-2. Initialize: island = {seed}; boundary = every line connecting the seed
-   to a neighbor.
-3. Score: value = sum(SCI over island members), cost = voltage-weighted
-   sum over boundary lines (see COST WEIGHTING below), ratio = value/cost.
-4. Grow: for every substation adjacent to the current boundary (and
-   itself eligible -- see ELIGIBILITY below), compute the ratio the
-   island would have if it were added. Add whichever candidate produces
-   the best resulting ratio.
-5. Stop the moment no candidate improves the ratio, or no eligible
-   candidates remain.
-6. Safety valve: MAX_ISLAND_SIZE hard-caps growth; hitting it logs a
-   warning rather than failing silently, since it's a sign the graph or
-   weights need a look, not an expected outcome.
+1. Seed: argmax(SCI) among eligible substations (Virginia, main connected
+   component, with a computed SCI).
+2. Initialize: island = {seed}; boundary = every line connecting it to a
+   neighbor.
+3. Score: value = sum(SCI over members), cost = voltage-weighted sum over
+   boundary lines, ratio = value/cost.
+4. Grow: for every substation adjacent to the boundary, compute the ratio
+   the island would have if added, and add whichever candidate gives the
+   best resulting ratio.
+5. Stop when no candidate improves the ratio, or none remain.
+6. MAX_ISLAND_SIZE is a hard safety cap; hitting it logs a warning since
+   it means the growth never naturally turned over.
 
-Boundary edges are recomputed from scratch (induced cut of the current
-node set) rather than incrementally patched on each candidate evaluation
--- simpler to get right than incremental bookkeeping, and cheap at this
-scale (max 15 members, boundary sizes in the single digits to low tens).
+Boundary edges are recomputed from scratch on each candidate rather than
+incrementally patched -- simpler, and cheap at this scale.
 
 LITERATURE GROUNDING
 ---------------------
-Direct algorithmic ancestor: Clauset (2005), "Finding local community
-structure in networks," Phys. Rev. E 72, 026132. Clauset's algorithm is
-structurally this one -- start from a single seed node, greedily add
-whichever neighbor most improves a local ratio metric (his "local
-modularity" R = edges-fully-inside / edges-touching-the-boundary), stop
-when no neighbor improves it -- specifically so it needs no global network
-knowledge, only the current boundary. The deliberate departure here: R is
-replaced with a domain-weighted ratio (SCI-weighted node value over real
-physical line-cut cost) instead of raw unweighted edge counts. That's the
-actual methodological move worth naming explicitly -- adapting a general
-local-community-detection template to a risk-weighted, engineering-cost-
-aware setting, not inventing greedy region-growing from scratch.
+Based on Clauset (2005), "Finding local community structure in networks,"
+Phys. Rev. E 72, 026132 -- same greedy seed-and-grow structure, but with
+his unweighted "local modularity" ratio replaced by a domain-weighted one
+(SCI value over real line-cut cost).
 
-Explicitly NOT mainstream power-systems "controlled islanding" (spectral
-clustering / slow-coherency methods optimizing generator dynamic-stability
-coherency and minimum power-flow disruption, for real-time response to
-cascading contingencies across the WHOLE network). This is a proactive,
-single-region, risk-index-driven selection ahead of a slower-onset hazard
-(a predicted geomagnetic storm) -- a different problem with different
-constraints, not a lighter version of that literature.
-
-GIC-specific precedent for topology reconfiguration as a mitigation
-strategy generally: "Optimal Transmission Line Switching under Geomagnetic
-Disturbances" (arXiv:1701.01469). Islanding specifically -- as opposed to
-general topology reconfiguration -- doesn't have a direct precedent paper
-combining it with GIC the way this project does; that's an honest gap,
-not a hidden one, and the actual contribution here is a defensible
-combination of two separately-established ideas applied to an under-
-explored specific use case.
+This is not mainstream power-systems "controlled islanding" (spectral/
+slow-coherency methods for real-time cascading-contingency response) --
+it's a proactive, risk-index-driven selection ahead of a predicted
+geomagnetic storm, a different problem.
 
 COST WEIGHTING
 --------------
-Boundary cost is voltage-weighted (kV / 100 per physical line), not a
-flat per-line count -- cutting a 500kV line is a materially bigger deal
-than cutting a 138kV line, and treating them identically would let the
-algorithm cut high-capacity lines as casually as low-capacity ones. This
-is itself a modeling assumption (linear in voltage, not capacity/current-
-rating-based) worth a sensitivity check later, same spirit as the SCI
-weight-sensitivity note in compute_virginia_criticality.py.
-
-Summed per PHYSICAL line, not per graph edge -- build_virginia_network_
-graph.py aggregates parallel circuits onto a single edge specifically so
-this cost accounting reflects the real number of lines that would need to
-be switched, not the number of substation-pairs.
+Boundary cost is voltage-weighted (kV / 100 per physical line) rather than
+a flat per-line count, since cutting a 500kV line is a much bigger deal
+than cutting a 138kV one. Summed per physical line, not per graph edge
+(build_virginia_network_graph.py already aggregates parallel circuits
+onto one edge), so this reflects the real number of lines to switch.
 
 ELIGIBILITY
 -----------
-Both the seed and every growth candidate must be a key in sci_lookup
-(built from va_substation_criticality.csv) -- i.e., inside Virginia, in
-the main connected component, with a computed SCI. A substation the graph
-connects to but that Phase 2 excluded (non-Virginia, or a different
-component) is never added, regardless of how good its ratio would look --
-growing outside Virginia doesn't make sense for a Virginia-scoped
-mitigation study, and Phase 4/5's downstream econ re-solve is VA-scoped
-too. `select_island()` also accepts an `excluded_nodes` set so Phase 6's
-second island can exclude Island A's members and boundary, keeping the
-two structurally independent (per the plan's second-island design).
+Both the seed and every growth candidate must have a computed SCI (i.e.
+be in Virginia and in the main connected component) -- a substation the
+graph connects to but that's outside that scope is never added, no matter
+how good its ratio would look. `select_island()` also takes an
+`excluded_nodes` set so a second island can avoid overlapping a first
+one's members and boundary.
 
 GENERATION-ANCHORED SEEDING (require_local_generation)
 --------------------------------------------------------
-Added after reading the NZ precedent paper (arXiv:2507.12495) in full:
-its strongest scenario (Scenario 5) isn't a generic protective cut, it's
-an island deliberately anchored on Manapouri, a real hydro generation
-site, so the protected load stays served by local generation regardless
-of what the wider grid does. Every island this project selected before
-this point (A, B, C, D, E) had zero local generation -- islanding them
-just isolates load from the grid's supply, it doesn't substitute a local
-one, which is a materially weaker form of protection than Scenario 5's.
-
-`select_island()`'s `generation_lookup`/`min_generation_mw` params only
-constrain the SEED, not the whole island: eligible_nodes for seeding is
-narrowed to substations with >= min_generation_mw of nearby EIA-860
-capacity (via scripts/check_island_generation.py's
-compute_generation_by_substation()), but growth candidates afterward are
-unconstrained, same as before. This mirrors Manapouri's actual role --
-it's the anchor the island is built around, not a requirement every
-member independently satisfy; requiring every member to have its own
-generation would be a much stronger (and for a transmission substation
-graph, largely unsatisfiable) constraint that Scenario 5 itself doesn't
-impose either.
+Inspired by NZ's Scenario 5 (arXiv:2507.12495), which anchors its island
+on Manapouri hydro generation so the protected load keeps being served
+locally regardless of the wider grid. `generation_lookup`/
+`min_generation_mw` only constrain the SEED choice (to substations with
+enough nearby EIA-860 capacity) -- growth afterward is unconstrained,
+same as the base algorithm. Requiring every member to have its own
+generation would be a much stronger constraint than Scenario 5 itself.
 
 Usage:
     python scripts/select_virginia_island.py
@@ -158,13 +106,10 @@ def select_island(
 ) -> dict:
     """Run the seeded greedy region-growing algorithm once. Returns a dict
     with seed, members, boundary edges/lines, final value/cost/ratio, and
-    a step-by-step growth trace (for the methods section: which substation
-    was added at each step and why).
+    a step-by-step growth trace (which substation was added when and why).
 
-    generation_lookup/min_generation_mw (see module docstring's GENERATION-
-    ANCHORED SEEDING) restrict only the SEED choice to substations with
-    real nearby EIA-860 generation capacity -- growth afterward is
-    unconstrained, same as the base algorithm."""
+    generation_lookup/min_generation_mw (see module docstring) restrict
+    only the SEED choice to substations with nearby EIA-860 generation."""
     excluded_nodes = excluded_nodes or set()
     eligible_nodes = set(sci_lookup) - excluded_nodes
     if not eligible_nodes:
@@ -172,12 +117,10 @@ def select_island(
 
     seed_candidates = eligible_nodes
     if generation_lookup is not None:
-        # `n in generation_lookup` first: compute_generation_by_substation()
-        # omits substations with no matched generation entirely (see its
-        # docstring), rather than including them at 0.0 MW. Checking only
-        # `.get(n, 0.0) >= min_generation_mw` would let every unmatched
-        # substation silently pass whenever min_generation_mw is 0.0 (the
-        # default), defeating require_local_generation entirely.
+        # Check `n in generation_lookup` explicitly -- unmatched substations
+        # are omitted from the dict entirely, not zero-valued, so `.get(n,
+        # 0.0) >= min_generation_mw` alone would let them all pass when
+        # min_generation_mw is 0.0 (the default).
         seed_candidates = {
             n for n in eligible_nodes
             if n in generation_lookup and generation_lookup[n] >= min_generation_mw
@@ -307,9 +250,7 @@ def main(
 
     out_path = VA_NETWORK_DIR / f"va_island_{island_id}.json"
     with open(out_path, "w") as f:
-        # allow_nan=False as a backstop: _sanitize_for_json should already
-        # have removed every inf, so this raises loudly instead of writing
-        # non-standard JSON if something was missed.
+        # allow_nan=False as a backstop in case _sanitize_for_json missed an inf
         json.dump(_sanitize_for_json(island), f, indent=2, allow_nan=False)
     logger.info(f"Saved {out_path}")
 

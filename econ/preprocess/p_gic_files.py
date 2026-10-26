@@ -404,14 +404,9 @@ def process_all_files(
     if all_vuln_dfs:
         combined_vuln = pd.concat(all_vuln_dfs, ignore_index=True)
 
-        # Scenario values end in "A/ph" (amps per phase). Partitioning on
-        # them directly used that embedded "/" as a filesystem path
-        # separator, silently splitting each scenario across two nested
-        # directory levels -- which pyarrow then failed to reconstruct as a
-        # "scenario" column on read (dropped it entirely rather than
-        # erroring). Partition on a filesystem-safe copy instead; "scenario"
-        # itself is left as an ordinary column, unaffected, since it isn't
-        # in the partitioning list.
+        # Scenario values contain "A/ph" -- partitioning directly on that
+        # turns the "/" into a path separator and pyarrow can't read the
+        # column back. Partition on a sanitized copy instead.
         combined_vuln["scenario_partition"] = combined_vuln["scenario"].str.replace(
             "/", "-", regex=False
         )

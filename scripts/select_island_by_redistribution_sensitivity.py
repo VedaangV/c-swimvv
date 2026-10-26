@@ -1,582 +1,170 @@
 """
 Replacement for scripts/deprecated_sci_islanding/select_virginia_island.py
-(see that folder's README.md for why the SCI-driven greedy method was
-retired). Same seeded-region-growing SHAPE -- pick a seed, grow it by
-adding whichever adjacent substation most improves a score, stop when
-nothing improves -- so this stays a drop-in producer of the same
-va_island_{id}.json schema (members, boundary_line_ids, seed,
-growth_trace) that every downstream Phase 4-6 script already consumes.
+(the old SCI-driven greedy method). Same seeded-region-growing shape --
+pick a seed, grow it by adding whichever adjacent substation most improves
+a score, stop when nothing improves -- producing the same va_island_{id}.json
+schema every downstream Phase 4-6 script consumes.
 
-PHASE 6d: SCORED BY REAL STORMS, NOT current_flow_betweenness_centrality
---------------------------------------------------------------------------
-Two scoring engines have now been tried, both for the same underlying
-reason: local greedy criteria can't see that a cut's benefit at one
-substation gets paid for -- or overpaid for -- by increased current
-importance somewhere else in the network (six real island selections,
-A-F, and a literature review both converged on this; see Nagarajan et
-al., "Heuristic Algorithms for Placing Geomagnetically Induced Current
-Blocking Devices" (arXiv:2310.09409): "installing a blocking device at
-one location can exacerbate GIC levels at others across the power grid").
-
-1. First fix (retired this revision): current_flow_betweenness_
-   centrality (Newman 2005; Brandes & Fleischer 2005) on the rest of the
-   network, before vs. after the cut. Cheap, and a real improvement over
-   the old SCI method's shortest-path betweenness -- but current-flow
-   betweenness has no storm in it. It models current flowing between
-   every pair of nodes in proportion to conductance, isotropically --
-   an average over every possible direction, not a measurement of what
-   any ONE real storm's geoelectric field would actually do. This is
-   exactly why Island G (selected by this proxy) came back 9/10
-   scenarios net-positive in the real econ pipeline, with the one loss
-   being the real Gannon storm -- and why a real-storm check
-   (scripts/validate_island_directionality.py, Phase 6c) found Island
-   G's own members' GIC flips sign between the real Gannon forcing and
-   the (non-independently-directional) 100-year return-period scenario.
-2. Second fix (retired this revision too): `evaluate_cut()` scored every
-   candidate by an actual single-iteration real admittance/GIC solve
-   (scripts/real_storm_gic.py, reusing the exact machinery Phase 6c
-   already proved out) against the three genuinely independent real
-   historical storms this pipeline has data for -- gannon, halloween,
-   st_patricks -- taking the WORST case across them, not the average.
-   This is what selected Island H/I. Real result once pushed through the
-   full econ pipeline with Halloween/St. Patrick's finally wired in
-   (Phase 6d's SCENARIOS fix): 10/12 scenarios net-positive, but only
-   1/3 real storms (Gannon) -- Halloween came back net-NEGATIVE despite
-   agreeing in sign with Gannon and St. Patrick's at the raw-|GIC| level.
-   Widening the search (more seed candidates, larger max_size) reproduced
-   the exact same candidate, ruling out "search wasn't broad enough" --
-   the ceiling was the scoring function itself.
-3. Current fix: raw |GIC| magnitude is not the quantity that actually
-   determines $/day economic impact -- the fragility model
-   (econ/preprocess/p_gic_files.py's lognormal Pf = Phi((ln Cpen +
-   ln|GIC| - ln theta)/beta) curve) is nonlinear and threshold-sensitive,
-   so two substations with the same |GIC| CHANGE can have very different
-   effects on failure probability depending on where they sit relative
-   to theta, and the whole-Virginia econ diff depends on which SPECIFIC
-   substations see that change, weighted by THEIR GDP exposure -- not on
-   an aggregated network-wide |GIC| sum. `evaluate_cut()` now scores
-   redistribution_cost via scripts.real_storm_gic.fragility_weighted_
-   redistribution(), which reuses econ/preprocess/p_gic_files.py's OWN
-   fragility function directly (not a reimplementation) at a small draw
-   count (CHEAP_FRAGILITY_DRAWS=300 vs. the real pipeline's 20,000+), to
-   get each substation's expected-GDP-affected before/after the cut. This
-   closes the specific gap Island H/I's Halloween result demonstrated:
-   raw-|GIC| sign agreement is not sufficient evidence of $/day-level
-   agreement.
+Scoring history (why it looks the way it does): an earlier revision scored
+candidates by current_flow_betweenness_centrality, a cheap but
+direction-blind topology proxy -- it has no storm in it, just an isotropic
+average over all current flow directions. That picked Island G, which
+looked great on 9/10 scenarios but failed the real Gannon storm. The fix
+was to score every candidate with an actual single-iteration admittance/GIC
+solve against the three real historical storms this project has data for
+(gannon, halloween, st_patricks), taking the worst case, not the average.
+That still wasn't quite enough on its own: raw |GIC| magnitude isn't what
+drives $/day impact (the fragility model's failure curve is nonlinear and
+threshold-sensitive), so scoring was changed again to use fragility-weighted
+expected-GDP-affected via real_storm_gic.fragility_weighted_redistribution(),
+which calls the real pipeline's own fragility function at a lower (cheaper)
+draw count.
 
 SCORING
 -------
-For a candidate node set `members` (a single seed, or the current
-island plus one growth candidate):
-1. boundary = induced cut of members (scripts/island_graph_utils.py);
-   boundary_line_ids = the physical lines that cut represents.
-2. One single-iteration real admittance/GIC solve
-   (scripts.real_storm_gic.solve_single_iteration) with those lines cut,
-   compared against a one-time real single-iteration BASELINE (no cut) --
-   same seed_base+0 Monte Carlo draw for both, so any difference is
-   attributable to the topology change, not random noise.
-3. redistribution_cost = MAX over gannon/halloween/st_patricks of the
-   fragility-weighted expected-GDP-affected CHANGE summed over every
-   substation NOT in `members`
-   (scripts.real_storm_gic.fragility_weighted_redistribution +
-   worst_case_redistribution_cost). Positive means the cut made the rest
-   of Virginia's expected fragility-priced exposure worse, under the
-   worst of the three real directions; negative means every one of the
-   three real storms improved it. Restricted to substations with real
-   economic exposure data (Virginia only, ~413 substations) -- a closer
-   match to the actual whole-Virginia econ objective than the prior
-   PJM-wide raw-|GIC| version.
-4. benefit -- SUPERSEDED by Phase 6i below. Used to be the static sum of
-   risk_weight over `members`; is now -worst_case_total_effect, the real,
-   worst-case-across-real-storms whole-Virginia effect. See PHASE 6i.
-5. switching_cost = voltage-weighted boundary cost (unchanged --
-   see scripts/island_graph_utils.py's edge_cost()).
-
-   SWITCHING_COST_WEIGHT (0.015) was calibrated for the raw-|GIC|
-   version's scale (per-storm magnitudes in the 1-30 range); benefit and
-   redistribution_cost's scales have both changed since (fragility-
-   weighted, Phase 6e; then real-worst-case-total, Phase 6i) without a
-   fresh switching_cost_weight recalibration against the new numbers --
-   expect this to need another pass once real magnitudes are observed,
-   same "check real output magnitudes, recalibrate" step this file has
-   needed every time its scoring function's underlying units changed.
-6. net_score -- SUPERSEDED by Phase 6i below. Used to be benefit -
-   redistribution_cost_weight * redistribution_cost - switching_cost_
-   weight * switching_cost, mixing a static topology proxy (benefit) with
-   a real worst-cased quantity (redistribution_cost). See PHASE 6i for
-   why that was a real gap and what replaced it.
+For a candidate node set `members` (a seed, or the island plus one growth
+candidate): compute the induced boundary cut, run one real single-iteration
+admittance/GIC solve with those lines removed (vs. a one-time real
+baseline), then score fragility-weighted expected-GDP-affected before/after
+for every substation NOT in members, taking the worst case across the three
+real storms as `redistribution_cost`. `benefit` is the real worst-case
+whole-Virginia effect (own improvement + cost to the rest), sign-flipped so
+positive is good. `switching_cost` is the voltage-weighted boundary cost
+(island_graph_utils.edge_cost()). `net_score` combines benefit and
+switching_cost; SWITCHING_COST_WEIGHT may need recalibrating if the scoring
+function's units change again.
 
 RISK WEIGHTS
 ------------
-Two-term only: 0.5*normalized GIC risk + 0.5*normalized economic
-exposure density (scripts/virginia_risk_data.py's loaders). No
-generation term anywhere -- see scripts/deprecated_sci_islanding/
-README.md's "Generation-anchoring is retired too" for why (Island G,
-selected with zero generation requirement, beat generation-anchored
-Island F's 6/10 with 9/10).
-
-PHASE 6i (see below) removed risk_weight from net_score/benefit entirely
--- it now serves ONLY as a candidate-discovery heuristic (which
-substations rank in the top-`n_seed_candidates` seed pool), same
-supporting role current-flow betweenness plays for Phase 6h. It no
-longer has any vote in which candidate the search actually selects.
+0.5*normalized GIC risk + 0.5*normalized economic exposure density
+(virginia_risk_data.py). No generation term -- it was tried and dropped
+(a generation-anchored island did worse than one without it). risk_weight
+no longer has any vote in scoring; it's purely a candidate-discovery
+heuristic for ranking the seed pool, alongside current-flow betweenness.
 
 SEED CANDIDATE POOL
 --------------------
-n_seed_candidates restricts seed evaluation to the top-N substations by
-raw risk_weight (highest GIC risk + economic exposure) rather than every
-eligible substation. This bound matters much more now than it did under
-the cheap betweenness proxy: each seed candidate now costs one real
-admittance/GIC solve (~20-40s observed on real data, see scripts/
-real_storm_gic.py's module docstring), not a fast graph computation.
-Growth-step candidates are bounded only by the existing boundary-
-adjacency constraint (a boundary's fan-out, typically single digits to
-tens) -- also now each a real solve. A full search run's total real-solve
-count is roughly (n_seed_candidates + sum of boundary fan-out across
-growth steps) -- lower --n-seed-candidates and/or --max-size if a run is
-impractically slow.
+n_seed_candidates caps seed evaluation to the top-N substations by raw
+risk_weight, since each seed candidate now costs one real admittance/GIC
+solve (~20-40s), not a cheap graph computation. Growth-step candidates are
+bounded by boundary adjacency. Lower --n-seed-candidates/--max-size if a
+run is too slow.
 
-min_lines filters the SEED pool (not growth) to substations with at
-least that many physical lines incident to them (summed line_ids across
-all their graph edges) -- added after a real run kept selecting a
-genuine degree-1 dead-end substation as seed every time: real GIC risk,
-real economic exposure, minimal switching cost, and (correctly, not a
-bug) essentially zero redistribution cost, since nothing routes through
-a true leaf. min_lines >= 2 forces seed selection toward substations
-that could plausibly anchor a multi-substation region, without touching
-growth itself.
+min_lines filters the seed pool (not growth) to substations with at least
+that many physical lines -- added because degree-1 dead-end substations
+kept winning as seeds (minimal cost, ~zero redistribution risk) despite
+being unable to grow into anything.
 
-PHASE 6g: BOUNDED LOOKAHEAD -- ONE-STEP GREEDY CAN'T SEE NON-MONOTONIC PATHS
------------------------------------------------------------------------------
-Real-data motivation: once Phase 6f's precision-bug fix was applied, Island
-G -- built under the now-fully-deprecated generation-anchored/current-flow-
-betweenness method, no longer reachable by THIS file's own search -- came
-back with a whole-Virginia net_musd sum an order of magnitude larger than
-Island H or J, this file's own real-storm/fragility-weighted selections.
-That is a real instance of the failure mode this section fixes: the old
-stopping rule (`if best_candidate_eval["net_score"] <= current_eval["net_
-score"]: stop`) only ever looks one step ahead. It cannot tell the
-difference between "this branch is a dead end" and "this branch is
-temporarily worse but leads somewhere better" -- e.g. members {1} scoring
-higher than {1,2}, but {1,2,3} scoring higher than either. Since growth
-only ever adds one member and never removes one, the old rule would stop
-permanently at {1} and never discover {1,2,3}.
+BOUNDED LOOKAHEAD (`_try_bounded_lookahead`)
+---------------------------------------------
+One-step greedy stopping can't tell a dead end from a path that's
+temporarily worse but leads somewhere better (e.g. {1} > {1,2} but
+{1,2,3} > both). When the best growth candidate would make net_score
+worse, the search tentatively commits anyway and keeps growing up to
+`lookahead_steps` more steps, watching whether net_score recovers past
+its pre-step value. If it does, the tentative path is committed for real;
+if the budget runs out first, it's discarded and the search stops where
+the old rule would have. Strictly a relaxation -- never worse than the
+old behavior. Only explores the single greedy-best candidate at each
+lookahead step, not every branch, so it won't catch every possible
+non-monotonic path.
 
-Fix: `_try_bounded_lookahead()`. When the single best growth candidate at
-a step would make net_score worse (the old stopping condition), the search
-no longer gives up immediately -- it tentatively commits to that candidate
-anyway and keeps greedily growing (still picking the single best candidate
-at each step, not branching) for up to `lookahead_steps` MORE steps
-(`--lookahead-steps`, default LOOKAHEAD_STEPS below), watching whether
-net_score ever climbs back past the score it had BEFORE the tentative step
-(not just past the immediately-rejected candidate's score). The moment it
-does, the whole tentative path up to that recovery point is committed for
-real and normal growth resumes from there. If the lookahead budget runs out
-without recovering, the entire tentative extension is discarded and the
-search stops exactly where the old rule would have -- so this is a strict
-relaxation, never worse than the old behavior, only sometimes better.
+BETWEENNESS-WIDENED SEED POOL (`compute_betweenness_seed_candidates`)
+------------------------------------------------------------------------
+risk_weight ranks a substation's own location; it says nothing about
+whether a substation is electrically pivotal (lots of current routes
+through it), which is what made Island G look so strong under the old
+proxy. current_flow_betweenness_centrality measures that pivotalness.
+This computes it once on the baseline network (not per-candidate) and
+unions the top `n_betweenness_candidates` into the seed pool so
+electrically-pivotal substations get a chance to be judged by the same
+real-storm scoring -- it only widens discovery, never touches net_score
+or the accept/reject decision itself.
 
-Cost: each lookahead attempt is up to `lookahead_steps` more real
-admittance/GIC solves per boundary candidate at each extra step, but this
-path only triggers at points where growth would otherwise have stopped
-(typically once or twice per search), not at every step.
+HARD REAL-STORM FILTER
+------------------------
+`benefit` used to mix a static risk_weight proxy for the island's own
+gain with a real worst-cased redistribution cost for everyone else --
+half the picture was real, half was a topology guess. Now `benefit` is
+fully real: `-worst_case_total_effect`, where total_effect combines the
+real own_effect and real redistribution_cost per storm, maxed over the
+three storms. `passes_real_storm_filter` is a hard gate (not just a
+score term): any candidate with worst_case_total_effect > 0 (minus
+`filter_margin`, see below) is never added at any selection point --
+seed, growth, lookahead, or polish. If literally every seed candidate
+fails, the search still returns the least-bad one rather than crashing,
+but flags `seed_passed_real_storm_filter: false`.
 
-Still not exhaustive: only the single greedy-best candidate is explored at
-each lookahead step, not every branch (a full branch-and-bound would cost
-combinatorially more real solves per rejected step). This catches the
-reported (1,2,3) > (1) > (1,2) failure mode but not every possible
-non-monotonic path a true joint optimization would find -- see the
-LIMITATIONS section below, which this doesn't retire, only narrows.
+fragility_draws defaults higher here (SEARCH_FRAGILITY_DRAWS=2000) than
+real_storm_gic.py's cheap default (300), since a hard filter needs less
+Monte Carlo noise to be trustworthy. Still far cheaper than the real
+pipeline's 20,000+ draws, so passing this filter means "likely
+direction-robust," not "proven" -- the real pipeline can still disagree
+on a close call.
+
+SAFETY MARGIN (`filter_margin`)
+----------------------------------
+A candidate at e.g. -0.0005 has no real margin over the search's own
+sampling noise, so which side of zero the real pipeline lands on is
+close to a coin flip. `filter_margin` requires the worst storm's effect
+to clear this far below zero, not just be non-positive, before a
+candidate is accepted anywhere. 0.0 reproduces the original behavior.
+
+HARD FRAGMENTATION GATE
+--------------------------
+A candidate whose cut would strand other substations outside it (it's a
+graph cut vertex) can look artificially cheap -- tiny own-outage cost,
+tiny switching cost, large benefit from sitting on lots of current paths
+-- even though no real utility would disconnect a substation knowing it
+cuts off 148 others. `evaluate_cut()` checks this first, cheaply, before
+running any solve: candidates that would fragment the rest of the
+network (outside `members`' own baseline-connected component) hard-fail
+the real-storm filter immediately.
+
+LOCAL-SEARCH POLISH (`polish_island`)
+----------------------------------------
+Growth only ever adds members, forward, and never reconsiders one already
+added. After growth (and any lookahead) settles, this runs up to
+`--polish-iterations` rounds of greedy single-member remove/swap moves,
+accepting whichever available move most improves net_score while still
+passing the hard filter. Can only match or improve on what growth found,
+never make it worse. Expensive: roughly (island_size + island_size *
+boundary_fanout) real solves per iteration, so the default is low (3).
+
+MIN-MEMBERS RETRY AND SHORTLIST
+-----------------------------------
+A 1-substation island can be numerically valid but too small to be an
+interesting result. When `min_members > 1`, the top
+`min_members_seed_attempts` seed candidates are each grown and polished
+in net_score order, stopping at the first that reaches `min_members`
+(never by relaxing what growth accepts -- only by trying a different
+seed). If none reach it, the largest grown island is returned anyway,
+flagged `meets_min_members: false`.
+
+The proxy filter doesn't reliably predict a >1-member island's real
+economic outcome the way it did for single-substation islands (the proxy
+and the real IO model's $/day multiplier effects are different metrics
+in uncalibrated units, and they can diverge more as more substations and
+sectors are involved). `shortlist_size > 1` keeps the min-members retry
+loop exploring until it collects that many qualifying candidates instead
+of stopping at the first, so several real candidates can be validated
+through the real pipeline instead of just one. The best is saved as
+usual; the rest are saved as va_island_{id}_alt{n}.json for independent
+validation. This doesn't fix the underlying proxy-vs-real-model gap, it
+just gives more chances to land on a candidate where the gap doesn't flip
+a sign.
 
 LIMITATIONS -- HONEST, NOT HIDDEN
 ------------------------------------
-Still a GREEDY search over a SEEDED REGION shape, not the full
-optimization-over-the-GIC-circuit the literature's exact methods use
-(arXiv:1701.01469's MIQCP, or a DRO formulation over storm-severity
-uncertainty like arXiv:2104.00204). Scoring against real storms fixes
-the direction-blindness diagnosed in Phase 6c, and bounded lookahead
-(Phase 6g) fixes the one-step-stopping blind spot, but the search itself
-is still greedy region-growing (single seed, single best candidate per
-step/lookahead-step), not a joint optimization over which candidates to
-consider. Worst-case-over-three-storms is also not the
-same as worst-case-over-all-possible-directions -- gannon/halloween/
-st_patricks are the only three real, independently-measured directional
-forcings this project has data for, not an exhaustive sample of every
-direction a real storm could take. If this still doesn't produce a
-consistently positive, direction-robust result once run against real
-data, the next honest step is the bigger optimization rung, not another
-heuristic tweak.
-
-PHASE 6h: BETWEENNESS-WIDENED SEED POOL -- A DISCOVERY GAP, NOT A SCORING GAP
--------------------------------------------------------------------------------
-Real-data motivation: Island G's Halloween/St. Patrick's backfill (Phase 6g)
-confirmed it fails all three real storms (0/3) -- so its apparent strength
-was a genuine direction-blindness artifact, not evidence the search was
-missing a better candidate. But the person running this project reasonably
-asked why the real-storm-scored search (which SHOULD generalize better than
-G's topology-only proxy) hadn't already found something at least as
-economically large as G, just correctly signed. Checked directly against
-real data before writing any code: G's own seed substation (96396692) does
-NOT appear anywhere in Island K's `seed_candidate_trace` -- the full list of
-every seed this search actually evaluated. So the search was never blind to
-G's location because real-storm scoring rejected it; it was blind because
-G's seed was never even a CANDIDATE.
-
-Why not: the seed pool has always been (going back to this file's very
-first, pre-real-storm revision that produced G itself -- see git history,
-commit 32eebc8) the top `n_seed_candidates` substations by `risk_weight`
-(0.5*GIC risk + 0.5*econ exposure density -- how valuable/exposed a
-substation's OWN location is). That is a different axis entirely from what
-made G interesting: G's huge redistribution effect comes from being an
-electrically PIVOTAL node (current from all over the network routes through
-it), not from G's own location being especially GIC-risky or GDP-dense.
-current_flow_betweenness_centrality (Newman 2005; Brandes & Fleischer 2005)
-is exactly the measure of that pivotalness -- it's what the deprecated
-proxy that originally selected G was built on (see PHASE 6d section 1
-above) -- but this file never used it to pick CANDIDATES, only (in that
-now-fully-retired revision) to isotropically SCORE them.
-
-Fix: `compute_betweenness_seed_candidates()` computes current-flow
-betweenness ONCE on the full baseline network (a single one-time cost, not
-per-candidate -- contrast with the retired revision's much more expensive
-per-cut recomputation) and takes the top `n_betweenness_candidates`
-eligible substations by that measure, UNION'd with the existing top-
-`n_seed_candidates`-by-`risk_weight` pool (deduplicated). Every seed in
-the combined pool -- however it was nominated -- is then evaluated by
-the exact same real-storm/fragility-weighted `evaluate_cut()` every other
-seed already goes through. Betweenness only WIDENS which substations get a
-chance to be judged by real physics; it never touches net_score or the
-accept/reject decision itself, deliberately -- putting an isotropic,
-direction-blind signal into the actual scoring is the specific mistake
-Phase 6d retired G's method for making, and this fix is careful not to
-reintroduce it through a side door.
-
-Cost: one current_flow_betweenness_centrality solve on ~2600 substations
-(observed cost unknown against this session's real data -- the retired
-per-candidate version of this computation was already flagged as
-expensive; this is cheaper since it happens once, not once per cut, but
-still likely on the order of minutes, not seconds), plus up to
-`n_betweenness_candidates` additional real admittance/GIC solves (~20-40s
-each) for whichever newly-nominated substations weren't already in the
-risk_weight pool.
-
-Honest expectation, and what actually happened: Island L (this fix's real
-run) DID nominate substations current_flow_betweenness ranked highly that
-weren't already in the risk_weight seed pool, but still came back 0/3 on
-real storms (gannon -0.005, halloween -0.037, st_patricks -0.001 net_musd)
--- confirming G's failure mode (and apparently its whole neighborhood's)
-is structural, not a Phase 6h-sized discovery gap. That result is what
-motivated Phase 6i below.
-
-PHASE 6i: HARD REAL-STORM FILTER -- FIXING A SECOND, DEEPER PROXY GAP
-------------------------------------------------------------------------
-Real-data motivation: Island L still failing all three real storms despite
-a widened seed pool raised a sharper question -- why does a search that
-explicitly worst-cases redistribution_cost over real storms keep landing
-on real-storm failures at all? Answer, found by re-reading evaluate_cut()
-rather than running more searches: `benefit` was NEVER storm-aware.
-
-   benefit = sum(risk_weights.get(n, 0.0) for n in members)   # static, isotropic
-   redistribution_cost = worst_case_redistribution_cost(per_storm)  # real, worst-cased
-   net_score = benefit - redistribution_cost_weight * redistribution_cost - switching_cost_weight * switching_cost
-
-`fragility_weighted_redistribution()` already computes a real, per-storm
-`own_effect` (the members' own fragility-weighted improvement from being
-islanded) inside `per_storm` -- but evaluate_cut() only ever pulled
-`redistribution_cost_real` out of it for scoring, discarding `own_effect`
-in favor of the static `risk_weight` proxy. So net_score was worst-casing
-HALF of the real per-storm picture (the cost to the rest of the network)
-while the other half (the benefit to the island's own members) stayed a
-non-storm-specific topology guess. A candidate whose static risk_weight
-overstated its real, direction-specific own-effect could look net-positive
-at search time while genuinely failing in the real pipeline -- exactly
-what G and L both did.
-
-Fix, two parts:
-1. `benefit` is now `-worst_case_total_effect`, where `total_effect[storm]
-   = own_effect[storm] + redistribution_cost_real[storm]` (both already
-   the same fragility-weighted-expected-GDP-affected units from the same
-   call, so summing them needs no cross-unit calibration, unlike mixing
-   in risk_weight would) and `worst_case_total_effect = max` over gannon/
-   halloween/st_patricks. `net_score = redistribution_cost_weight *
-   benefit - switching_cost_weight * switching_cost` -- 100% real,
-   100% worst-cased, no static proxy left in it anywhere.
-2. A HARD FILTER, not just a reweighted score: `passes_real_storm_filter
-   = worst_case_total_effect <= 0.0`. Every selection point -- seed
-   choice, growth-step choice, and every step inside bounded lookahead --
-   now refuses to add ANY candidate that fails this, regardless of its
-   net_score relative to other failing candidates. A failing candidate is
-   simply never a member, not merely disfavored. (Exception: if literally
-   every evaluated SEED candidate fails, the search still returns the
-   least-bad one rather than crashing -- same "select best available, warn
-   loudly" convention this file already used for net_score <= 0 -- but
-   flags `seed_passed_real_storm_filter: false` in the output so this is
-   never silently mistaken for a real pass.)
-
-`risk_weight` keeps a role, just not in scoring: it's still one of the two
-candidate-DISCOVERY heuristics (alongside Phase 6h's betweenness) that
-decide who gets a real solve spent on them in the first place.
-
-Also raised `fragility_draws` from real_storm_gic.py's CHEAP_FRAGILITY_
-DRAWS default (300) to SEARCH_FRAGILITY_DRAWS (2000, `--fragility-draws`)
-for this file's own evaluate_cut() calls specifically -- a hard filter is
-only trustworthy if the quantity it gates on isn't dominated by Monte
-Carlo noise, and 300 draws is noisier than 2000 for the same reason a
-small island's effect was the one Phase 6f's precision bug hit first.
-Still far cheaper than the real pipeline's 20,000+ draws, and still one
-batch (see real_storm_gic.py: must stay under 5000 to keep the early-stop
-convergence check inert).
-
-Honest limit: this raises the odds a selected island survives the real
-20,000-draw/IO-model pipeline, it cannot guarantee it -- the filter still
-runs on an approximation, just a much less noisy one than before. Treat a
-candidate that passes Phase 6i as "likely direction-robust, not yet
-proven" until the real pipeline confirms it, same posture already taken
-for every other in-loop score in this file.
-
-Real result, Island M: 10/12 scenarios net-positive, gannon solidly
-positive (the biggest real-storm margin of any candidate so far), but
-halloween (-0.025 diff_per_day_musd) and st_patricks (-0.0003) both still
-came back slightly negative in the real, full-precision pipeline despite
-M passing the Phase 6i filter at search time -- exactly the honest limit
-above, observed for real. st_patricks' miss is small enough (three orders
-of magnitude below the other real storms' effects) that it may not even
-be a stable result -- the fragility Monte Carlo is unseeded (no
-torch.manual_seed() anywhere in econ/preprocess/p_gic_files.py), so it
-could flip sign on a rerun from pure randomness alone. halloween's miss
-is far larger in relative terms and more likely a real, structural
-residual. This motivated Phase 6j below.
-
-PHASE 6j: LOCAL-SEARCH POLISH -- GROWTH NEVER RECONSIDERS OR REMOVES
-------------------------------------------------------------------------
-The one significant piece of algorithm SHAPE still missing after 6g/6h/6i:
-growth only ever ADDS a member, one at a time, forward. It never
-reconsiders a member already added, and never removes one, no matter how
-much better the island might be without it. Bounded lookahead (Phase 6g)
-only searches forward through hypothetical future adds; it can't undo a
-past one. Island M coming this close (positive on 10/12, including the
-largest real-storm margins yet, with only two small negative real-storm
-residuals left) is exactly the situation where a small structural
-adjustment -- not a bigger search or a stricter filter -- is the more
-likely fix.
-
-Fix: `polish_island()`, run once after the growth loop (and any Phase 6g
-lookahead recoveries within it) settles. Greedy local search, same
-one-move-per-iteration shape as growth itself, up to `--polish-iterations`
-(default POLISH_ITERATIONS) rounds:
-1. REMOVE moves: try dropping each current member. Only valid if the
-   remaining set stays a single connected component (`nx.is_connected`
-   on G's induced subgraph) -- an island has to stay one contiguous
-   region to mean anything physically; a remove that would split it into
-   disconnected fragments is skipped, not evaluated.
-2. SWAP moves: for each current member, try removing it and adding a
-   different substation adjacent to the reduced set's new boundary (this
-   automatically keeps the result connected, since it's exactly the same
-   "add a boundary-adjacent node" operation growth already uses, just
-   applied after a removal).
-3. Every candidate move -- remove or swap -- goes through the identical
-   `evaluate_cut()` and Phase 6i hard filter as every seed/growth
-   candidate. A move is only accepted if it both passes the filter (when
-   `require_real_storm_filter` is True) AND improves `net_score` over the
-   current best. Greedily take the single best improving move each
-   iteration; stop early if no move improves anything, otherwise stop at
-   the iteration cap.
-
-Cost, bluntly: this is the most expensive phase yet. One iteration costs
-roughly (island_size remove-attempts + island_size * boundary-fanout
-swap-attempts) real admittance/GIC solves -- for a 12-member island with
-~15-candidate boundaries, that's on the order of 12 + 12*15 ~ 190 real
-solves PER iteration, each ~20-40s. `--polish-iterations` defaults low
-(3) deliberately; raise it only with the runtime cost in mind.
-
-Honest expectation: polish can only IMPROVE on (or match) what growth
-already found, by construction -- every accepted move strictly improves
-net_score and never violates the hard filter, so it can never make the
-final island worse. But it's still a local search around one specific
-grown island, not a search over all possible islands -- if the fix
-Island M needs isn't reachable by a single remove or swap from where
-growth left it, polish won't find it either, and the honest next step
-would be the bigger optimization rung already named in LIMITATIONS.
-
-Real result, Island N (polish enabled): got closer than anything before
-it -- st_patricks flipped to genuinely positive (+0.000091, though that's
-small enough to be within the fragility Monte Carlo's own noise floor,
-not a confident win) -- but gannon (-0.009885) and especially halloween
-(-0.037100) are still negative in the real, full-precision pipeline. This
-motivated two real, related observations, addressed by Phase 6k below:
-(1) halloween has been the stubborn one in EVERY real-storm-scored
-candidate this file has ever produced (H -0.031, J -0.031, L -0.037, N
--0.037; only K, at +0.006, ever cleared it) -- too consistent to be
-chance, and a real signal that Virginia's grid responds badly to
-halloween's specific direction almost everywhere the search has looked.
-But "everywhere the search has looked" has only ever meant the top
-~10-30 substations by risk_weight/betweenness, out of Virginia's ~400+
-eligible ones -- a candidate robust to halloween's direction could exist
-outside that slice and never get the chance to be tested; nothing stops
---n-seed-candidates from being set larger than the whole eligible pool to
-test exhaustively, at real (large) compute cost. (2) every one of H/J/K/
-L/M/N passed the Phase 6i filter's bare `<= 0` at search time (2000-4000
-draws) yet still landed with at least one real storm slightly negative
-once run through the real 20,000+-draw validating pipeline -- a candidate
-sitting at, say, -0.0005 at search time has no real margin over that
-approximation's OWN sampling noise, so which side of zero the real
-pipeline lands on is close to a coin flip. That's what Phase 6k's
-filter_margin directly targets.
-
-PHASE 6k: SAFETY MARGIN -- "<= 0" ISN'T THE SAME AS "ROBUSTLY <= 0"
-------------------------------------------------------------------------
-Fix: `evaluate_cut()` takes a `filter_margin` (default 0.0, exact
-pre-Phase-6k behavior) and changes `passes_real_storm_filter` from
-`worst_case_total_effect <= 0.0` to `worst_case_total_effect <=
--filter_margin`. Threaded through every acceptance point in the file --
-seed selection, growth, lookahead, and polish -- so a candidate needs
-real breathing room below zero, not just the right sign, before it's ever
-allowed into the island at any stage. This doesn't change WHAT is being
-measured, only how much margin is required before trusting the
-measurement -- the same "check real output magnitudes, recalibrate"
-discipline this file's every other weight has needed; a sensible starting
-value should come from this project's own observed noise scale (e.g. how
-much a single candidate's worst_case_total_effect moves between two
-otherwise-identical fragility_draws runs), not a guessed constant.
-
-Combined with `--n-seed-candidates` set larger than the eligible pool
-(an exhaustive scan, not a new code path -- the existing seed-selection
-logic already just takes eligible_nodes sorted by risk_weight and slices
-the first N, so N >= pool size means "everyone") and a higher
-`--fragility-draws` (shrinking the gap between the search's own
-approximation and the real validating pipeline's precision), this is the
-most direct answer this file has to "make the next island actually hold
-up" -- at real, substantial extra compute cost (an exhaustive seed scan
-is roughly (eligible substation count) real admittance/GIC solves just
-for seed evaluation, on top of growth/polish's own cost), and still not
-an absolute guarantee (finite fragility_draws always retains SOME
-sampling noise) -- but a large, honest step up from hoping a bare `<= 0`
-happens to hold.
-
-PHASE 6l: HARD FRAGMENTATION GATE -- A CUT VERTEX IS NOT AN ISLAND
-------------------------------------------------------------------------
-Island O (the first fully 3/3-and-12/12-positive real result, found by
-Phase 6k's exhaustive-seed-search + safety-margin combination) turned out
-to be a single substation with 4 boundary lines whose cut split the REST
-of the network into 149 components -- 148 substations outside the
-"island" lost their only path to the rest of PJM through it. Nothing in
-evaluate_cut()'s objective ever penalized this: `benefit` only ever
-measured the worst-case-across-real-storms fragility effect, and
-`switching_cost` only counts boundary lines, so a substation that happens
-to be a graph cut vertex (topologically load-bearing for everyone else,
-not just electrically significant for itself) was free to look like an
-excellent, nearly-costless candidate -- tiny own-outage cost (1
-substation's GDP), tiny switching cost (4 lines), while its real-storm
-benefit is large precisely because it sits on enough current-carrying
-paths to matter. That's a search reward, not a real islanding strategy:
-no utility disconnects one substation knowing it stops 148 others from
-reaching the grid. run_virginia_islanded_gic.py's check_island_
-connectivity() already computed exactly this (`outside_fragmented`,
-`stranded_substations`) -- but only as a post-hoc diagnostic run AFTER
-selection, with nothing feeding it back into the search itself.
-
-Fix: `evaluate_cut()` now checks fragmentation FIRST, before the
-expensive admittance/GIC solve -- `G.subgraph(set(G.nodes) - members)`'s
-connected-component count is exactly the same quantity check_island_
-connectivity() computes as `non_island_components` (removing members as
-vertices drops every boundary edge implicitly, since a boundary edge by
-definition has exactly one endpoint in members -- no need to copy G or
-touch edges at all), just cheap graph structure with no solve required.
-More than one component means cutting this candidate's boundary would
-strand something outside it; such a candidate now hard-fails
-`passes_real_storm_filter` immediately (`worst_case_total_effect` and
-`benefit` set to +inf/-inf sentinels -- sanitize_for_json() already
-turns these into null on save, the same handling this file already
-relies on for benefit_cost_ratio=inf) and is never scored, seed, growth,
-lookahead, or polish alike, at any real-storm-filter-requiring call site
--- the exact same hard-gate treatment Phase 6i already gives a candidate
-that fails on gannon/halloween/st_patricks. A candidate whose boundary
-cut keeps the rest of the network in one piece pays nothing extra and is
-evaluated exactly as before.
-
-PHASE 6m: MIN-MEMBERS FILTER -- ISLAND O'S SIZE WAS A SEPARATE QUESTION FROM ITS VALIDITY
-------------------------------------------------------------------------
-Island O turned out numerically valid (Phase 6l's corrected fragmentation
-check found 0 stranded substations) but is a single substation --
-raised earlier as its own open question, independent of any bug: is a
-1-substation island a large/interesting enough result for the paper?
-Nothing before this forced growth toward a larger result -- the seed/
-growth loop always just grows from whichever single seed won by
-net_score, and if every one of ITS neighbors fails the real-storm filter
-or hurts net_score, growth honestly stops at 1 with no mechanism to try
-a different seed that might grow further.
-
-Fix: `min_members` (default 1, exact old behavior -- always tries just
-the single best-net_score seed). When `min_members > 1`, the top
-`min_members_seed_attempts` seed candidates (by net_score, among
-whichever pool passed Phase 6i/6k's filter) are each grown and polished
-in full, in net_score order, stopping at the first whose final island
-reaches `min_members`. This can never force growth to add a member that
-fails the real-storm filter or hurts net_score -- it only chooses a
-DIFFERENT seed to grow from, never relaxes what growth itself is allowed
-to accept. If none of the attempted seeds reach `min_members`, the
-largest one actually grown is returned anyway (with `meets_min_members:
-False` recorded in the saved JSON) rather than failing outright -- same
-honest-fallback spirit as every other filter in this file when nothing
-in the candidate pool satisfies it.
-
-Cost, bluntly: each additional seed attempt is a FULL growth run (every
-step's boundary candidates each cost one real admittance/GIC solve, same
-as the main growth loop), not a cheap check -- `min_members_seed_attempts`
-multiplies search cost roughly linearly, on top of whatever
-`--n-seed-candidates` already spends on seed-only evaluation. Keep it
-modest (the default, 10) unless a real reason to search further has
-already shown up in a prior run's logs (e.g. several early attempts all
-stopping at 1-2 members for the same reason).
-
-PHASE 6n: SHORTLIST -- THE PROXY FILTER DOESN'T RELIABLY PREDICT A >1-MEMBER ISLAND'S REAL OUTCOME
-------------------------------------------------------------------------
-Island P (5 members, passed Phase 6i/6k's filter at search time with real
-margin -- gannon/halloween/st_patricks worst_case_total_effect all more
-negative than -2, well past the -0.05 filter_margin) still came back with
-gannon strongly NET-NEGATIVE in the real, full pipeline (net_musd
--58.2 at mid_365d) once actually run through compute_island_benefit_
-cost.py. This isn't just Monte Carlo sampling noise a bigger
-filter_margin or more fragility_draws would shrink: evaluate_cut()'s
-`worst_case_total_effect` (fragility_weighted_redistribution() in
-real_storm_gic.py -- failure_probability x STATIC GDP exposure, summed)
-and the real pipeline's net_musd (the full Ghosh/Leontief input-output
-model's $/day sector-to-sector multiplier effects, run through compare_
-island_econ.py) are two DIFFERENT metrics in two different, never-
-calibrated-against-each-other unit spaces. filter_margin=0.05 is 0.05 in
-the proxy's own arbitrary units, not $0.05 or 5% of anything in the real
-model -- there was never a guaranteed 1:1 relationship between the two
-near zero, it just happened to hold closely enough for every single-
-substation island (H through O) that a small margin was "enough." For a
-5-member island, redistribution touches more substations spread across
-more economic sectors, where the IO model's multiplier effects can (and
-here, did) diverge sharply from the proxy's simple linear sum.
-
-Fix, given how expensive it would be to replace the proxy with the real
-econ model inside the search loop itself (compute_island_benefit_cost.py's
-own pipeline is orders of magnitude more expensive per candidate than one
-fragility_weighted_redistribution() call -- a full GIC Monte Carlo +
-sequential fragility Monte Carlo + IO econ analysis, not a single
-admittance solve): stop treating "the one candidate that wins by
-net_score" as uniquely trustworthy, and generate several real candidates
-to validate instead. `shortlist_size` (default 1, exact old behavior)
-keeps the PHASE 6m retry loop exploring (up to `min_members_seed_attempts`)
-until it has collected `shortlist_size` seeds whose grown island reaches
-`min_members`, instead of stopping at the first. The best one (by member_
-count then net_score) is still returned/saved exactly as before; the rest
-are attached as `candidate_shortlist` (seed/members/boundary_line_ids/
-net_score/worst_case_total_effect/per_storm, no growth_trace/polish_trace
--- enough to run through the real pipeline, not the full search detail)
-and, when running as a script, saved as their own `va_island_{id}_alt{n}.
-json` files so each can be validated with the exact same commands used
-for the primary candidate (run_virginia_islanded_gic.py --island
-{id}_alt{n}, etc.) without re-running search from scratch.
-
-This does not fix the underlying proxy-vs-real-model gap -- it only
-gives more chances to find a candidate where the gap happens not to flip
-a sign. A durable fix would score candidates with the real econ model (or
-a cheap-but-faithful reduction of it) instead of the fragility-only
-proxy; not attempted here given the cost tradeoff above.
+Still a greedy search over a seeded-region shape, not a full joint
+optimization over the GIC circuit (the literature's exact methods use
+e.g. an MIQCP or a DRO formulation over storm-severity uncertainty).
+Worst-case-over-three-storms is also not the same as worst-case-over-all
+-possible-directions -- gannon/halloween/st_patricks are the only three
+real, independently-measured directional forcings this project has data
+for. If this still doesn't produce a consistently positive,
+direction-robust result against real data, the honest next step is a
+bigger optimization approach, not another heuristic tweak.
 
 Usage:
     python scripts/select_island_by_redistribution_sensitivity.py --island j
@@ -641,7 +229,7 @@ SHORTLIST_SIZE = 1
 def load_risk_weights() -> dict:
     """sub_id -> risk_weight, 0.5*normalized GIC risk + 0.5*normalized
     economic exposure density, restricted to Virginia/main-component
-    substations -- see module docstring's RISK WEIGHTS."""
+    substations -- see module docstring's RISK WEIGHTS section."""
     topology = restrict_to_virginia(load_topology_metrics())
     eligible = topology[topology["in_main_component"]].copy()
 
@@ -664,20 +252,14 @@ def load_risk_weights() -> dict:
     merged["econ_exposure_norm"] = (merged["gdp_norm"] + merged["population_norm"]) / 2
     merged["risk_weight"] = 0.5 * merged["gic_risk_norm"] + 0.5 * merged["econ_exposure_norm"]
 
-    # Explicit float() cast: pandas/numpy float64 values aren't JSON-
-    # serializable by the standard library's json module, and every
-    # downstream sum over this dict needs to stay plain Python float,
-    # not silently promote to numpy and fail json.dump later.
+    # float() cast: numpy float64 isn't JSON-serializable by stdlib json
     return {str(k): float(v) for k, v in zip(merged["sub_id"], merged["risk_weight"])}
 
 
 def node_line_count(G: nx.Graph, node) -> int:
-    """Physical line count incident to `node` -- summed line_ids across
-    all its graph edges (build_virginia_network_graph.py aggregates
-    parallel circuits onto one graph edge, so this is NOT just the
-    node's graph degree). A node with node_line_count == 1 is a true
-    dead-end: cutting it can't redistribute current anywhere, since
-    nothing was routing through it in the first place."""
+    """Physical line count incident to `node` -- not the same as graph
+    degree, since parallel circuits get aggregated onto one graph edge.
+    node_line_count == 1 means a true dead-end substation."""
     return sum(len(data.get("line_ids", [])) for _, _, data in G.edges(node, data=True))
 
 
@@ -694,63 +276,20 @@ def evaluate_cut(
     filter_margin: float = 0.0,
 ) -> dict:
     """Score cutting `members`'s induced boundary -- see module
-    docstring's SCORING, PHASE 6i, and PHASE 6k. Requires one real
-    single-iteration admittance/GIC solve (the expensive part -- see
-    scripts/real_storm_gic.py's module docstring for the cost tradeoff
-    this implies) plus two cheap fragility-model calls per real storm
-    (before/after).
+    docstring's SCORING / hard filter / safety margin sections. Requires
+    one real single-iteration admittance/GIC solve (the expensive part)
+    plus two cheap fragility-model calls per real storm (before/after).
 
-    PHASE 6i: `risk_weights` is no longer used here at all -- kept as a
-    parameter only because callers (seed/growth loops) still pass it for
-    other purposes (candidate discovery). `benefit` used to be the static
-    sum of risk_weight (GIC risk + econ exposure density) over `members`
-    -- an isotropic, non-storm-specific proxy. It is now the real,
-    worst-case-across-the-three-real-storms whole-Virginia effect,
-    sign-flipped so positive still means good: `own_effect` (the real
-    fragility-weighted benefit TO members) and `redistribution_cost_real`
-    (the real fragility-weighted cost to everyone else) are the same
-    units from the same fragility_weighted_redistribution() call, so
-    summing them per storm is legitimate (no cross-unit calibration
-    needed, unlike the old risk_weight-vs-redistribution_cost split).
+    `risk_weights` is no longer used for scoring, only kept as a param
+    since callers still pass it for candidate discovery.
 
-    PHASE 6k: `passes_real_storm_filter` now requires the worst real storm
-    to clear `filter_margin` below zero, not just be non-positive. Islands
-    H/J/K/L/M/N all passed the plain <= 0 filter at search time (2000
-    draws) yet still landed with at least one real storm slightly negative
-    once run through the full 20,000+-draw validating pipeline -- a
-    candidate sitting at say -0.0005 at search time has no real margin
-    over that approximation's own sampling noise, so it's a coin flip
-    which side of zero the real pipeline lands on. filter_margin > 0
-    requires real breathing room, not just the right sign, before a
-    candidate is ever accepted, seed or growth.
-
-    PHASE 6l: before doing any of that -- checked first because it's
-    cheap and disqualifying -- reject outright if cutting this boundary
-    would fragment the OUTSIDE network (see module docstring's PHASE 6l).
-
-    CORRECTED after Island P's search run showed literally every one of
-    402 seed candidates disqualified: this graph is NOT one connected
-    component at baseline -- compute_betweenness_seed_candidates() has
-    always logged "49 components ... 148 nodes in smaller components
-    dropped" for this exact G, entirely independent of any candidate.
-    Naively checking `G.subgraph(all nodes - members)`'s component count
-    against a flat "> 1" threshold is always true because of those ~48
-    pre-existing baseline orphan components, regardless of what gets cut
-    -- it can never tell a real cut vertex from ordinary background noise
-    already in the topology. The fix restricts the check to `members`'
-    OWN baseline-connected component (nx.node_connected_component(G,
-    <any member>) -- valid because `members` is already required to be
-    internally connected, so every member sits in the same baseline
-    component): only asking "does removing `members` from the single
-    connected region they actually belong to split THAT region apart,"
-    never touching the ~48 components that were already separate from
-    `members` before any cut and have nothing to do with this candidate.
-    check_island_connectivity() (run_virginia_islanded_gic.py) has this
-    identical pre-existing bug for the same reason and needs the same
-    fix -- every outside_fragmented/stranded_substations count logged for
-    islands G through O is inflated by this same ~48-component baseline
-    contamination and should not be taken as an exact figure until
-    re-run with the corrected logic."""
+    Fragmentation is checked first, cheap and disqualifying, before any
+    solve: the check is restricted to `members`' own baseline-connected
+    component, not the whole graph, since the graph has ~48 pre-existing
+    orphan components at baseline unrelated to any candidate -- checking
+    against the whole graph would flag every candidate as fragmenting.
+    check_island_connectivity() in run_virginia_islanded_gic.py has this
+    same restriction and needs it for the same reason."""
     boundary = boundary_edges(G, members)
     boundary_line_ids = set()
     for u, v in boundary:
@@ -806,24 +345,22 @@ def evaluate_cut(
 def compute_betweenness_seed_candidates(
     G: nx.Graph, seed_pool: set, n_betweenness_candidates: int, solver: str = CFB_SOLVER,
 ) -> list:
-    """See module docstring's PHASE 6h. Computes current-flow betweenness
-    ONCE on the full baseline network (largest connected component -- this
-    measure requires a connected graph, see island_graph_utils.
-    largest_component_subgraph) and returns the top `n_betweenness_
-    candidates` substations within `seed_pool` (already min_lines-filtered
-    by the caller) by that measure. This is a discovery aid only -- every
-    substation returned still gets evaluated by the exact same real-storm/
-    fragility-weighted evaluate_cut() every risk_weight-nominated seed
-    goes through, so a high-betweenness-but-direction-wrong candidate
-    (like Island G) is still correctly rejectable; this just gives it a
-    chance to be judged at all."""
+    """See module docstring's betweenness-widened seed pool section.
+    Computes current-flow betweenness once on the baseline network
+    (largest connected component -- this measure requires a connected
+    graph) and returns the top `n_betweenness_candidates` substations
+    within `seed_pool` by that measure. Discovery aid only -- every
+    substation returned still gets evaluated by the same real-storm
+    evaluate_cut() as any other seed, so a high-betweenness-but-wrong-
+    direction candidate is still rejectable; this just gives it a
+    chance to be judged."""
     if n_betweenness_candidates <= 0:
         return []
 
     logger.info(
         f"Computing current-flow betweenness centrality on the baseline network "
-        f"({G.number_of_nodes()} nodes, solver={solver}) to widen the seed candidate pool -- "
-        "a one-time cost, not per-candidate (see module docstring's PHASE 6h)..."
+        f"({G.number_of_nodes()} nodes, solver={solver}) to widen the seed candidate pool "
+        "(one-time cost, not per-candidate)..."
     )
     G_baseline = largest_component_subgraph(G)
     cfb = nx.current_flow_betweenness_centrality(G_baseline, weight="conductance", solver=solver)
@@ -850,27 +387,16 @@ def _try_bounded_lookahead(
     require_real_storm_filter: bool = True,
     filter_margin: float = 0.0,
 ) -> list | None:
-    """See module docstring's PHASE 6g. `first_candidate`/`first_eval` is
-    the single best growth candidate at this step, already known to score
-    WORSE than `current_eval` (the old stopping rule's trigger condition)
-    -- and, since the caller only calls this with a candidate that already
-    passed the Phase 6i hard real-storm filter, already known to be
-    real-storm-eligible itself. Tentatively commits to it anyway and keeps
-    greedily growing (single best candidate per step, not branching) for
-    up to `lookahead_steps` more steps, checking after every step --
-    including this first one -- whether net_score has climbed back past
-    `current_eval`'s score (the score BEFORE the tentative step, not just
-    past first_eval). Every lookahead step is ALSO restricted to
-    real-storm-filter-passing candidates when require_real_storm_filter is
-    True -- lookahead is only allowed to explore a path where every single
-    member ever added is independently real-storm-eligible, never a
-    temporarily-failing state.
+    """See module docstring's bounded lookahead section. `first_candidate`/
+    `first_eval` is the single best growth candidate at this step, already
+    known to score worse than `current_eval`. Tentatively commits to it
+    and keeps greedily growing for up to `lookahead_steps` more steps,
+    checking each step whether net_score climbs back past `current_eval`'s
+    score. Every lookahead step is also restricted to real-storm-filter-
+    passing candidates when require_real_storm_filter is True.
 
-    Returns the list of (candidate, eval) pairs to commit, ending at the
-    first point recovery happened, or None if the lookahead budget ran
-    out without recovering -- in which case the caller discards the whole
-    tentative extension and stops exactly where the old one-step rule
-    would have."""
+    Returns the list of (candidate, eval) pairs to commit, up to the
+    recovery point, or None if the budget ran out without recovering."""
     path = [(first_candidate, first_eval)]
     trial_island = set(island) | {first_candidate}
     if first_eval["net_score"] > current_eval["net_score"]:
@@ -910,9 +436,8 @@ def _try_bounded_lookahead(
 
 def _boundary_candidates_for(G: nx.Graph, members: set, eligible_nodes: set) -> set:
     """Substations adjacent to `members`'s boundary, not already in
-    `members` -- the same "who could grow into this set next" computation
-    the main growth loop uses, factored out so polish_island() can reuse
-    it against a hypothetically-reduced member set."""
+    `members` -- same computation the growth loop uses, factored out so
+    polish_island() can reuse it against a reduced member set."""
     boundary = boundary_edges(G, members)
     candidates = {v for (u, v) in boundary if u in members} | {u for (u, v) in boundary if v in members}
     return {c for c in candidates if c not in members and c in eligible_nodes}
@@ -934,17 +459,12 @@ def polish_island(
     max_iterations: int,
     filter_margin: float = 0.0,
 ) -> tuple:
-    """PHASE 6j local-search polish -- see module docstring. Growth only
-    ever ADDS members, one at a time, forward; this runs AFTER growth (and
-    any Phase 6g lookahead) settles, trying single-member REMOVE and SWAP
-    moves against the final island, greedily accepting whichever available
-    move most improves net_score, same one-move-per-iteration shape as
-    growth itself. Every candidate move goes through the identical
-    evaluate_cut() and Phase 6i hard filter as every seed/growth candidate
-    -- a move is only ever accepted if it passes the filter (when
-    require_real_storm_filter is True) AND strictly improves net_score, so
-    polish can only match or improve on what growth already found, never
-    make it worse.
+    """Local-search polish -- see module docstring. Runs after growth (and
+    any lookahead) settles, trying single-member remove/swap moves against
+    the final island, greedily accepting whichever move most improves
+    net_score. Every move goes through the same evaluate_cut() and hard
+    filter as seed/growth candidates, so polish can only match or improve
+    on what growth found, never make it worse.
 
     Returns (island: set, current_eval: dict, polish_trace: list)."""
     polish_trace = []
@@ -1032,17 +552,13 @@ def _grow_and_polish_from_seed(
     filter_margin: float,
 ) -> dict:
     """Grow one island from a single fixed seed through the growth loop,
-    Phase 6g lookahead, and Phase 6j polish -- the per-seed body
-    select_island_by_sensitivity() used to run inline for whichever
-    single seed won by net_score. Factored out so PHASE 6m's min_members
-    retry loop can call this against more than one seed candidate in
-    net_score order, stopping at the first whose grown island reaches
-    min_members, without duplicating growth/lookahead/polish logic.
+    lookahead, and polish. Factored out so the min_members retry loop can
+    call this against more than one seed candidate in net_score order,
+    stopping at the first whose grown island reaches min_members.
 
-    Returns everything about this one attempt EXCEPT the search-level
+    Returns everything about this one attempt except the search-level
     seed_candidate_trace/seed_passed_real_storm_filter/min_members
-    bookkeeping, which only make sense once the caller has picked which
-    attempt won -- it adds those itself."""
+    bookkeeping, which the caller adds once it's picked the winner."""
     if seed_eval["net_score"] <= 0:
         logger.warning(
             f"Seed candidate ({seed})'s net_score is {seed_eval['net_score']:.4f} <= 0 -- even "
@@ -1233,39 +749,23 @@ def select_island_by_sensitivity(
     shortlist_size: int = SHORTLIST_SIZE,
 ) -> dict:
     """Run the real-storm-scored greedy search once. Returns a dict with
-    the same members/boundary_line_ids/seed/growth_trace shape scripts/
-    deprecated_sci_islanding/select_virginia_island.py produced, plus the
-    net_score/benefit/redistribution_cost/switching_cost/per_storm
-    breakdown at each step, plus a `candidate_shortlist` list of up to
-    `shortlist_size - 1` runner-up candidates (see PHASE 6n below).
+    the same members/boundary_line_ids/seed/growth_trace shape the old
+    select_virginia_island.py produced, plus the net_score/benefit/
+    redistribution_cost/switching_cost/per_storm breakdown at each step,
+    plus a `candidate_shortlist` of runner-up candidates.
 
-    min_lines restricts the SEED pool only -- see module docstring's
-    SEED CANDIDATE POOL. lookahead_steps controls the Phase 6g bounded
-    lookahead -- see module docstring's PHASE 6g section. 0 reproduces the
-    old strict one-step-stopping behavior exactly. n_betweenness_candidates
-    controls the Phase 6h betweenness-widened seed pool -- see module
-    docstring's PHASE 6h section. 0 reproduces the pre-Phase-6h behavior
-    (risk_weight-only seed pool) exactly. fragility_draws overrides
-    evaluate_cut()'s Monte Carlo draw count (see real_storm_gic.py's
-    CHEAP_FRAGILITY_DRAWS) -- None uses that module's default.
-    require_real_storm_filter is the Phase 6i hard gate -- see module
-    docstring's PHASE 6i section. True (default) means a candidate that
-    fails on any of the three real storms is NEVER added to the island,
-    seed or growth step, even if it's the "best available" by net_score;
-    False reproduces pre-Phase-6i behavior (net_score alone decides).
-    polish_iterations controls the Phase 6j local-search polish (single-
-    member remove/swap moves after growth settles) -- see module
-    docstring's PHASE 6j section. 0 disables polish and returns growth's
-    result unchanged. filter_margin is the Phase 6k safety margin below
-    zero the hard filter requires -- see module docstring's PHASE 6k
-    section. 0.0 reproduces the pre-Phase-6k behavior (bare <= 0) exactly.
-    min_members/min_members_seed_attempts are the Phase 6m min-size retry
-    -- see module docstring's PHASE 6m section. min_members=1 (default)
-    reproduces pre-Phase-6m behavior exactly (only the single best-
-    net_score seed is ever grown). shortlist_size is the Phase 6n
-    shortlist -- see module docstring's PHASE 6n section. 1 (default)
-    reproduces pre-Phase-6n behavior exactly (stop at the first candidate
-    meeting min_members)."""
+    See the module docstring for what each parameter controls in detail;
+    briefly: min_lines restricts the seed pool only. lookahead_steps is
+    the bounded-lookahead budget (0 = old strict one-step stopping).
+    n_betweenness_candidates widens the seed pool by betweenness (0 =
+    risk_weight-only pool). fragility_draws overrides the Monte Carlo
+    draw count used for scoring. require_real_storm_filter toggles the
+    hard real-storm gate. polish_iterations controls local-search polish
+    (0 disables it). filter_margin is the safety margin below zero the
+    hard filter requires (0.0 = bare <= 0). min_members/
+    min_members_seed_attempts control the min-size retry (min_members=1
+    = only the best seed is ever grown). shortlist_size controls how many
+    qualifying candidates to collect before stopping (1 = stop at first)."""
     excluded_nodes = excluded_nodes or set()
     eligible_nodes = set(risk_weights) - excluded_nodes
     if not eligible_nodes:
@@ -1348,18 +848,10 @@ def select_island_by_sensitivity(
     else:
         seeds_to_try = sorted_by_net_score[:1]
 
-    # PHASE 6n: all attempts are kept, not just the winner -- Island P
-    # showed the proxy filter_margin doesn't reliably predict the real
-    # econ-model outcome for a >1-member island (evaluate_cut()'s
-    # worst_case_total_effect and compute_island_benefit_cost.py's
-    # net_musd are different metrics in different units -- see module
-    # docstring's PHASE 6n section), so the one candidate that happens to
-    # win by net_score is not meaningfully more likely to survive the real
-    # pipeline than the next few. shortlist_size>1 keeps exploring (up to
-    # min_members_seed_attempts) instead of stopping at the first success,
-    # so the caller gets several real candidates to validate instead of
-    # one -- shortlist_size=1 (default) reproduces the exact old
-    # stop-at-first-success behavior.
+    # All attempts are kept, not just the winner, so shortlist_size > 1
+    # can hand back several real candidates to validate instead of one
+    # (the proxy score doesn't reliably predict a >1-member island's real
+    # outcome -- see module docstring). shortlist_size=1 stops at first.
     all_attempts = []
     qualifying_count = 0
     for attempt_idx, (seed, seed_eval) in enumerate(seeds_to_try):
@@ -1409,9 +901,8 @@ def select_island_by_sensitivity(
     best_result["min_members_requested"] = min_members
     best_result["meets_min_members"] = best_result["member_count"] >= min_members
 
-    # Lean summaries only (no growth_trace/polish_trace) -- the full detail
-    # is already on best_result itself; these are just enough for a caller
-    # to decide which runner-up to validate next through the real pipeline.
+    # Lean summaries only (no growth_trace/polish_trace) -- enough for a
+    # caller to decide which runner-up to validate through the real pipeline.
     best_result["candidate_shortlist"] = [
         {
             "seed": r["seed"], "members": r["members"], "member_count": r["member_count"],

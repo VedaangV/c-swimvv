@@ -1,39 +1,19 @@
 """
-Widens scripts/compare_island_gic.py's baseline-vs-islanded GIC comparison
-from an island's members to every Virginia substation, to answer the
-question that comparison alone couldn't: does the aggregate whole-Virginia
-Ghosh economic result being worse (see ISLANDING_MITIGATION_PLAN.md)
-correspond to a concentrated or diffuse GIC redistribution pattern beyond
-the island's own members.
+Widens compare_island_gic.py's baseline-vs-islanded GIC comparison from an
+island's members to every Virginia substation, to see whether the worse
+whole-Virginia econ result (see ISLANDING_MITIGATION_PLAN.md) comes from a
+concentrated redistribution onto a few substations (fixable by redrawing
+the boundary) or a diffuse one (more fundamental to this cut).
 
-Two possible pictures, both actionable:
-- Concentrated: a handful of specific substations account for most of the
-  increase -- worth checking whether a different boundary (excluding
-  whatever's near those substations) could plausibly avoid them.
-- Diffuse: increases spread thinly across most of Virginia -- suggests the
-  redistribution effect is closer to fundamental for this cut, not a
-  boundary-drawing mistake.
+Reuses compare_island_gic.py's load_member_gic()/summarize()/
+build_comparison() as-is, just given Virginia's full substation set.
 
-Reuses scripts/compare_island_gic.py's load_member_gic()/summarize()/
-build_comparison() unmodified -- same computation, just given Virginia's
-full substation set instead of one island's members. Reuses scripts/
-extract_virginia_results.py's _load_va_substation_lookup() for the
-Virginia-membership check (va_boundary.contains(Point(lon, lat))) rather
-than re-deriving it.
+WARNING: loads/filters the same ~3000+3000 ground_gic*.csv files as
+compare_island_gic.py but keeps ~2000 substations instead of a handful, so
+expect a few GB of memory use.
 
-Takes an island_id ("a", "b", ...; default "a") -- same generalization as
-scripts/run_virginia_islanded_gic.py and scripts/compare_island_gic.py.
-
-WARNING: this loads and filters all ~3000 baseline + ~3000 islanded
-ground_gic*.csv files down to ~2000 Virginia substations instead of a
-handful -- same number of files as scripts/compare_island_gic.py (so
-similar wall-clock time, dominated by file I/O either way), but the
-resulting combined DataFrame is much larger. Expect a few GB of memory
-use, not an issue on a normal machine but worth knowing if it runs
-somewhere constrained.
-
-Run after both scripts/run_virginia_gic.py and scripts/run_virginia_
-islanded_gic.py (same island_id) have completed.
+Run after both run_virginia_gic.py and run_virginia_islanded_gic.py (same
+island_id) have completed.
 
 Usage:
     python scripts/compare_virginia_gic.py [--island b] [--top N]

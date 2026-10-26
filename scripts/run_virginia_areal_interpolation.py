@@ -1,35 +1,17 @@
 """
 Map Virginia's ZCTA-level economic exposure (GDP/establishments/population)
-onto Virginia+PJM substation service areas via dasymetric area interpolation
-— the piece of the economic-impact chain that attributes exposure to a
-specific substation's service area, which downstream fragility/IO modeling
-needs.
+onto Virginia+PJM substation service areas via dasymetric area interpolation,
+so downstream fragility/IO modeling can attribute exposure to a substation's
+service area.
 
-Reuses, unmodified:
-- econ.preprocess.p_econ_data.create_voronoi_polygons(): fed Virginia+PJM's
-  own substation coordinates (not the national set) and PJM's states (not
-  all of CONUS) as the clip boundary. This works without touching that
-  function's code because its CONUS-exclusion filter (drops AK/HI/PR) is a
-  no-op on an already-PJM-only states_gdf, so the union of what's left IS
-  the PJM footprint — exactly the clip boundary Virginia needs. Its Voronoi
-  cache path is monkeypatched to a Virginia-specific location so this never
-  touches the national voronoi_polygons_clipped.geojson.
-- tobler.dasymetric.masked_area_interpolate(): the same function
-  econ/preprocess/p_areal_intp.py calls once per national raster tile — but
-  Virginia's ZCTA count (~900) and PJM's substation count are small enough
-  that this runs as a single call over Virginia's own raster window, with
-  none of that file's 64-tile national chunking/threading machinery needed.
-  Reuses that file's _mask_from_coarse_single() for the land-cover mask.
+Reuses econ.preprocess.p_econ_data.create_voronoi_polygons() and
+tobler.dasymetric.masked_area_interpolate() unmodified, scoped to PJM's
+substations/states and Virginia's own raster window (small enough to run as
+a single call, no national tile chunking needed).
 
-Known limitation, accepted per the SAM-scope decision in
-VIRGINIA_ADAPTATION.md: Voronoi cells for substations right at Virginia's
-border may not perfectly match the true national tessellation, since
-non-PJM neighbors (Tennessee) aren't included as generator points. Small,
-documented edge effect — not worth a national-scale rebuild for this.
-
-Untested against real data (no rasterio/tobler environment available in
-this session) — expect this may need one fix-and-rerun cycle like every
-other new step has, and report back exactly what breaks if so.
+Known limitation: Voronoi cells right at Virginia's border may not exactly
+match the true national tessellation since non-PJM neighbors aren't included
+as generator points. Small, accepted edge effect.
 
 Run after scripts/extract_virginia_results.py (needs va_socioeconomic_data.pkl).
 """
@@ -103,7 +85,7 @@ def main():
     if voronoi_aea.empty:
         raise RuntimeError("No Virginia substations survived the Voronoi clip/filter — check sub_id matching.")
 
-    bounds = zcta_aea.total_bounds  # minx, miny, maxx, maxy in raster CRS
+    bounds = zcta_aea.total_bounds  # (minx, miny, maxx, maxy) in raster CRS
     with rasterio.open(COARSE_SINGLE) as src:
         window = from_bounds(*bounds, transform=src.transform)
         transform = src.window_transform(window)
@@ -141,12 +123,9 @@ def main():
         allocate_total=True,
     )
 
-    # Dasymetric interpolation can lose mass at raster/mask edges (pixels the
-    # land mask drops, geometry clipped at the window boundary). Rescale each
-    # column back to the source ZCTA totals, same correction
-    # econ/scripts/l_prepr_data.py's load_and_aggregate_tiles() applies
-    # nationally across tiles — here it's a single correction since this is
-    # already one region, not a cross-tile aggregation.
+    # Dasymetric interpolation loses some mass at raster/mask edges, so
+    # rescale back to the source ZCTA totals (same fix l_prepr_data.py
+    # applies per-tile nationally, just a single correction here).
     for c in economic_cols:
         target = float(zcta_aea[c].sum())
         observed = float(result[c].sum())

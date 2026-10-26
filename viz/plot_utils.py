@@ -109,22 +109,9 @@ def export_econ_comparison_table(econ_results, file_suffix=""):
 
 
 def savefig_with_retry(fig, path, attempts: int = 4, delay_seconds: float = 2.0, **savefig_kwargs):
-    """fig.savefig() with a few retries on Windows' OSError [Errno 22]
-    Invalid argument -- observed directly against real data on this
-    project's own Windows machine, on more than one Virginia figure
-    script, including once right after a run that had JUST successfully
-    produced and saved that same file moments before. That pattern (same
-    code, same path, intermittent failure) points to a transient
-    environmental race -- most likely OneDrive's sync filter or Windows
-    Defender's real-time scan briefly locking the file as it's created,
-    not a deterministic bug in this code or in matplotlib/Pillow -- so a
-    short retry-with-delay is the right fix, not another attempt to guess
-    a code-level root cause. Re-raises on the last attempt so a genuine,
-    persistent failure still surfaces instead of being silently
-    swallowed. Originally added in viz/plot_virginia_hazard_maps.py;
-    moved here once viz/plot_virginia_winding_gic_ranking.py hit the
-    identical error, so a third caller doesn't need to duplicate it
-    again."""
+    """fig.savefig() with retries -- works around an intermittent Windows
+    OSError [Errno 22] (likely OneDrive/Defender briefly locking the file
+    as it's written). Re-raises on the last attempt."""
     last_err = None
     for attempt in range(1, attempts + 1):
         try:
@@ -139,12 +126,7 @@ def savefig_with_retry(fig, path, attempts: int = 4, delay_seconds: float = 2.0,
 
 
 def pil_save_with_retry(img, path, attempts: int = 4, delay_seconds: float = 2.0, **save_kwargs):
-    """Same transient-Windows-lock retry as savefig_with_retry above, but
-    for a PIL Image's own .save() -- hit directly by
-    viz/combine_island_maps.py's canvas.save() against real data on the
-    same Windows machine, same [Errno 22] Invalid argument. Same fix for
-    the same reason: a short retry-with-delay, re-raising on the last
-    attempt so a genuine, persistent failure still surfaces."""
+    """Same retry as savefig_with_retry above, for PIL Image.save()."""
     last_err = None
     for attempt in range(1, attempts + 1):
         try:

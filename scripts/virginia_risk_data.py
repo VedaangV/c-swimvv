@@ -2,18 +2,10 @@
 Shared per-substation risk/exposure data loaders -- GIC risk, economic
 (population/GDP) exposure, critical-facility counts, topology metrics.
 
-Extracted out of scripts/deprecated_sci_islanding/compute_virginia_
-criticality.py when the SCI-driven greedy islanding strategy was
-deprecated (see that folder's README.md for why). These loaders
-themselves were never SCI-specific -- they just read real per-substation
-data (Monte Carlo GIC output, Census/BEA population and GDP, critical-
-facility locations) off disk. compute_virginia_criticality.py's own
-contribution was combining them into one weighted index (SCI) and using
-that index to drive greedy region growth; that combination step is what
-turned out to be the flawed part (see ISLANDING_MITIGATION_PLAN.md), not
-the underlying data these loaders expose. Kept active and shared so
-anything -- old or new selection strategy -- can use the raw signals
-without depending on deprecated code.
+Extracted out of the now-deprecated SCI-driven islanding strategy's
+compute_virginia_criticality.py; these loaders were never SCI-specific,
+just raw per-substation data off disk, so they're kept shared for any
+selection strategy to use.
 
 Usage: import as a library, e.g.
     from scripts.virginia_risk_data import load_gic_risk, load_economic_exposure

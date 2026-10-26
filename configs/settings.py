@@ -42,10 +42,8 @@ P_TRAFO_BD = 0.01
 cut_off_volt = 160
 USE_OLD_SUB_DATA = True  # Use OSM data as of the Gannon storm
 
-# Resolve from PATH first (works unmodified on any machine/OS where ipopt is
-# installed in the active conda env, e.g. Windows' ...\Library\bin\ipopt.EXE);
-# fall back to the original hardcoded Linux path for environments where it
-# isn't on PATH but is known to live there.
+# Prefer whatever's on PATH (works across conda envs/OSes); fall back to the
+# known Linux install path otherwise.
 IPOPT_EXEC = shutil.which("ipopt") or "/home/pve_ubuntu/miniconda3/envs/spw-env/bin/ipopt"
 
 PROCESS_GND_FILES = False
@@ -146,9 +144,7 @@ OUTPUT_FILES = {
     ),
 }
 
-# Validation
-# Note: LUCY_DATA_LOC and SWERVE_DIR point to external data repositories
-# that must be configured by the user based on their local setup.
+# LUCY_DATA_LOC and SWERVE_DIR point to external data repos -- set these for your own setup.
 
 LUCY_DATA_LOC = Path("/data/archives/nfs/2024-May-Storm-data")
 SWERVE_DIR = Path("/data/archives/nfs/SWERVE/")
@@ -305,7 +301,7 @@ def setup_matplotlib():
     )
 
 
-# Reproiducible mapping configurations
+# Reproducible mapping configurations
 REP_DATA_DIR = DATA_DIR / "rep_data"
 TVA_DIR = REP_DATA_DIR / "tva"
 UIUC_DIR = REP_DATA_DIR / "uiuc150"

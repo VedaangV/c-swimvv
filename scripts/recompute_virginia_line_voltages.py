@@ -1,53 +1,12 @@
 """
 Regenerate per-line storm voltage maxima and return-period statistics for the
-Virginia+PJM transmission network, and package them into an HDF5 file with
-the same layout scripts/est_gic.py expects.
+Virginia+PJM transmission network, packaged into an HDF5 file with the same
+layout scripts/est_gic.py expects.
 
-Why this step exists (a gap in the original adaptation plan): scripts/
-est_gic.py drives its GIC solve almost entirely from *per-line* voltage
-columns (V_halloween, V_st_patricks, V_gannon, V_{50,75,...,250}) that were
-statistically fit against the ORIGINAL US EHV line set's storm history
-(data/grid_processed/df_lines_EHV.pkl + data/grid_processed/
-trans_lines_pickle.pkl, i.e. the Delaunay-weighted transmission lines used by
-scripts/calc_storm_maxes.py). Those line-level voltages cannot be filtered or
-reused for Virginia because scripts/build_virginia_network.py builds an
-entirely different set of lines (different LINE_IDs, different geometry,
-different Delaunay interpolation weights). They have to be recomputed against
-the VA+PJM lines. Per-site (B/E) magnetic/electric field quantities do not
-have this problem — the original plan's "no recomputation, just filter by MT
-site index" instruction is correct for those (see
-scripts/extract_virginia_storm_maxes.py) and is reused here for the "site"
-side of the output file.
-
-This script:
-1. Builds Delaunay interpolation weights for the VA+PJM lines against the
-   FULL, unfiltered set of US MT sites (never just PJM sites — same
-   continent-wide-interpolation principle Dennies specified for the B/E
-   step), by reusing scripts/calc_storm_maxes.read_transmission_lines()
-   unmodified. Output: data/virginia/grid_processed/trans_lines_pickle.pkl
-   (the last file scripts/build_admittance_matrix.py's load_and_process_data
-   needs that scripts/build_virginia_network.py doesn't already produce).
-2. Replays scripts/calc_storm_maxes.calculate_maxes() for every storm in
-   kp_ap_indices/storm_periods.csv against those VA+PJM lines to build a
-   (n_va_lines, n_storms) voltage-maxima array via multiprocessing.Pool.
-   calculate_maxes() reads MT_sites/df/obs_dict/n_trans_lines as module
-   globals on scripts.calc_storm_maxes, which we monkeypatch below in the
-   parent process — and, since the target machine is Windows (spawn, not
-   fork), also re-apply in every worker via the _init_worker Pool
-   initializer, exactly the pattern the original adaptation plan called
-   for. Without it, each spawned worker re-imports scripts.calc_storm_maxes
-   fresh without those attributes set, calculate_maxes() raises NameError,
-   process_storm-style exception handling swallows it per-storm, and the
-   run "completes" with a silently all-zero maxV_arr instead of failing
-   loudly. See _init_worker's docstring for the full mechanics.
-3. Fits return-period statistics on that array using
-   scripts/stat_analysis.py's bootstrap machinery unmodified.
-4. Packages sites/mt_sites, sites/transmission_lines, events/*, and
-   predictions/* into data/virginia/statistical_analysis/
-   va_geomagnetic_data_return_periods.h5, matching the exact HDF5 layout
-   scripts.est_gic.load_and_process_gic_data() reads.
-
-Run after scripts/build_virginia_network.py and
+The VA+PJM network has different lines (different IDs, geometry, Delaunay
+weights) than the original US EHV set, so the per-line voltage statistics
+can't just be filtered like the per-site B/E quantities can -- they have to
+be recomputed here. Run after scripts/build_virginia_network.py and
 scripts/extract_virginia_storm_maxes.py.
 """
 
@@ -84,21 +43,10 @@ HYDRO_QUEBEC_END = HYDRO_QUEBEC_START + timedelta(days=1)
 
 
 def _init_worker(mt_sites, df_, n_lines, obsdict):
-    """multiprocessing.Pool initializer for Windows (spawn) workers.
-
-    On Linux, Pool() forks — child processes inherit the parent's already
-    -monkeypatched scripts.calc_storm_maxes module object (csm.MT_sites,
-    csm.df, csm.obs_dict, csm.n_trans_lines set in main() below) for free.
-    On Windows there is no fork; each worker starts a fresh interpreter and
-    re-imports scripts.calc_storm_maxes from scratch, which does NOT have
-    those attributes set (they're only assigned inside this script's own
-    `if __name__ == "__main__":` block, which — correctly — never re-runs in
-    spawned children). Without this initializer, _process_storm_va's call to
-    csm.calculate_maxes() would raise NameError on MT_sites/df/obs_dict/
-    n_trans_lines in every worker — caught by its own try/except and logged,
-    so the run would silently "complete" with an all-zero maxV_arr instead
-    of crashing. Re-set the same globals here so it's correct on both
-    platforms."""
+    """Pool initializer: re-applies the calc_storm_maxes monkeypatch in each
+    worker. Needed on Windows (spawn) since workers re-import the module
+    fresh instead of inheriting it via fork; without this calculate_maxes()
+    raises NameError and the run silently produces an all-zero maxV_arr."""
     csm.MT_sites = mt_sites
     csm.df = df_
     csm.n_trans_lines = n_lines
@@ -107,9 +55,7 @@ def _init_worker(mt_sites, df_, n_lines, obsdict):
 
 def _process_storm_va(args):
     """Like scripts.calc_storm_maxes.process_storm, but always takes the
-    aggregated-max branch (is_special=False) since we only need line_maxV,
-    not the full per-minute voltage matrix special storms would otherwise
-    return."""
+    aggregated-max branch since we only need line_maxV here."""
     i, row = args
     try:
         _, _, _, maxV, _, _ = i, *csm.calculate_maxes(
@@ -136,15 +82,10 @@ def build_va_trans_lines_pickle(MT_sites):
 def save_gannon_delaunay_v(storm_df, gannon_idx):
     """Save the full per-minute Gannon-storm line-voltage matrix.
 
-    scripts.est_gic.load_and_process_gic_data() unconditionally loads
-    `<DATA_LOC>/storm_maxes/delaunay_v_gannon.npy` to determine each line's
-    voltage polarity (v_direction() needs the full per-minute time series,
-    not just the storm's peak magnitude — a majority-sign vote across many
-    samples, not a single scalar). compute_va_maxV_arr() above deliberately
-    calls calculate_maxes(is_special=False) for every storm to get just the
-    aggregated max (cheaper, and all the return-period fitting needs), which
-    means it never produces this file. Compute it separately, once, for the
-    Gannon storm only.
+    est_gic.load_and_process_gic_data() needs this to determine each line's
+    voltage polarity (a majority-sign vote over the full time series, not
+    just the peak magnitude). compute_va_maxV_arr() only computes aggregated
+    maxima, so this is computed separately, once, for Gannon only.
     """
     cache = VA_STORM_MAXES_DIR / "delaunay_v_gannon.npy"
     if cache.exists():
@@ -197,10 +138,9 @@ def fit_v_statistics(maxV_arr):
 
 
 def fit_or_reuse_site_statistics(quantity, va_site_arr, pjm_indices):
-    """Prefer filtering the already-fit US-wide B/E results to PJM site
-    indices (statistical fits are per-site/independent, so this is a valid,
-    much cheaper filter); fall back to fitting fresh on the PJM subset if the
-    US-wide cache isn't present on this machine."""
+    """Filter the already-fit US-wide B/E results to PJM site indices
+    (fits are per-site/independent, so this is a valid cheap filter);
+    fall back to fitting fresh on the PJM subset if no US-wide cache."""
     sa.n_samples, sa.n_years, sa.return_periods = SA_N_SAMPLES, SA_N_YEARS, SA_RETURN_PERIODS
     us_cache = DATA_LOC / "statistical_analysis" / f"results_{quantity}_return_periods.pkl"
 
@@ -241,9 +181,7 @@ def main():
     logger.info("Building VA+PJM Delaunay-weighted transmission lines...")
     df = build_va_trans_lines_pickle(MT_sites)
 
-    # Monkeypatch calc_storm_maxes globals: calculate_maxes()/process_storm()
-    # read these as free variables, only ever set (in the original script)
-    # inside its own `if __name__ == "__main__":` guard.
+    # calculate_maxes()/process_storm() read these as module globals
     csm.MT_sites = MT_sites
     csm.df = df
     csm.n_trans_lines = len(df)

@@ -1,25 +1,16 @@
 """
-Filter Virginia+PJM GIC Monte Carlo outputs down to Virginia, and filter the
+Filters Virginia+PJM GIC Monte Carlo outputs down to Virginia, and the
 national ZCTA-level socioeconomic dataset down to Virginia ZCTAs.
 
-The GIC simulation (scripts/run_virginia_gic.py) is correct only because it
-ran on the full PJM network — filtering happens here, after the fact, purely
-for reporting.
+The GIC simulation itself (run_virginia_gic.py) runs on the full PJM
+network -- filtering happens here, after the fact, for reporting only.
 
-Scope note on the economic model itself: econ/preprocess/p_gic_files.py
-converts ground_gic*.csv into the "effective GIC" files econ/scripts/
-econ_analysis.py consumes, but that conversion (and econ_analysis.py itself)
-also depends on econ/preprocess/p_areal_intp.py's Voronoi-polygon mapping of
-ZCTAs to the nearest EHV substation — built from
-data/admittance_matrix/substation_info.csv, i.e. the *original US* network,
-not Virginia's. Hooking Virginia's GIC results into the full IO/CGE run
-would mean rebuilding that Voronoi mapping against
-data/virginia/admittance_matrix/substation_info.csv and deciding whether the
-downstream SAM/technology tables should be applied at national or regional
-scope — a methodology question for Dennies, not a mechanical path swap. This
-script does not attempt it; it stops at producing Virginia-scoped GIC
-summaries and a Virginia-scoped socioeconomic_data.pkl, which is as far as
-the original plan's Step 6 specifies concretely.
+Note: hooking Virginia's GIC results into the full IO/CGE econ run would
+still require rebuilding p_areal_intp.py's ZCTA-to-substation Voronoi
+mapping against Virginia's own substation_info.csv (it's currently built
+from the national one) and deciding national vs regional SAM/technology
+table scope -- a methodology question, not done here. This script stops at
+producing Virginia-scoped GIC summaries and socioeconomic_data.pkl.
 """
 
 import pickle
@@ -81,14 +72,9 @@ def summarize_and_rank(va_gic: pd.DataFrame) -> None:
         logger.warning("No hazard columns found in Virginia GIC results.")
         return
 
-    # Winding GIC is a signed quantity -- (V_bus1 - V_neutral) * Y_winding,
-    # see scripts/est_gic.py's calc_trafo_gic() -- whose sign depends on
-    # storm field direction and which winding (HV/LV/Series/Common) is
-    # being measured, not on how large the current actually is. Averaging
-    # the signed value directly can cancel out real magnitude: a
-    # substation with consistently large but direction-varying current
-    # could average out near zero (or even negative), understating its
-    # actual risk. Rank on magnitude (|GIC|) instead of signed value.
+    # Winding GIC is signed (see est_gic.py's calc_trafo_gic()) and its sign
+    # depends on storm field direction, not current magnitude. Averaging
+    # signed values can cancel out real risk, so rank on |GIC| instead.
     va_gic_abs = va_gic.copy()
     va_gic_abs[hazard_cols] = va_gic_abs[hazard_cols].abs()
 
@@ -130,31 +116,23 @@ def summarize_ground_gic(
     va_ground_gic: pd.DataFrame, sub_lookup: pd.DataFrame, top_n: int = 25
 ) -> None:
     """sub_id + mean/p95 ground-GIC magnitude per storm scenario, from
-    va_ground_gic_results.csv -- the same underlying quantity (current to
-    earth through the substation's grounding connection, Y_earth *
-    V_nodal * 3, see scripts/est_gic.py's solve_total_nodal_gic()) that
-    scripts/run_virginia_fragility.py's fragility Monte Carlo already uses
-    for the headline economic-impact results. Using it here too keeps
-    va_top_substations.csv, viz/plot_virginia_gic_risk.py, and the SCI all
-    agreeing on what "GIC risk" means, rather than the per-winding
-    current summarize_and_rank() reports separately (useful for its own
-    per-transformer purpose, but a different physical quantity, and no
-    longer the one used for the paper's reported ranking/figure).
+    va_ground_gic_results.csv -- the same quantity (current to earth via
+    the grounding connection, see est_gic.py's solve_total_nodal_gic())
+    that run_virginia_fragility.py's Monte Carlo uses for the headline
+    impact results. Using it here too keeps va_top_substations.csv,
+    plot_virginia_gic_risk.py, and the SCI agreeing on what "GIC risk"
+    means, rather than the separate per-winding quantity summarize_and_rank()
+    reports.
 
-    Still signed for the same reason winding GIC is -- V_nodal's sign
-    depends on storm field direction -- so magnitude is taken here too,
-    same as summarize_and_rank().
+    Signed for the same reason winding GIC is, so magnitude is taken here
+    too.
 
-    Note on units: solve_total_nodal_gic() multiplies by 3 to combine all
-    three phases, so this is already total current, not "amps per phase"
-    the way winding GIC's "A/ph" columns are. va_top_substations.csv and
-    the risk map should be labeled "A" here, not "A/ph".
+    Units: solve_total_nodal_gic() multiplies by 3 for all three phases,
+    so this is total current ("A"), not "A/ph" like winding GIC's columns
+    -- label it accordingly.
 
-    va_ground_gic_results.csv itself has no latitude/longitude (unlike
-    va_gic_results.csv, whose per-winding rows get merged with
-    df_transformers' coordinates when scripts/run_virginia_gic.py writes
-    them) -- sub_lookup (already loaded in main() from
-    substation_info.csv) supplies them here instead.
+    va_ground_gic_results.csv has no lat/lon of its own, so sub_lookup
+    (loaded in main() from substation_info.csv) supplies it.
     """
     gic_cols = [c for c in va_ground_gic.columns if c.startswith("GIC_")]
     if not gic_cols:
@@ -199,12 +177,10 @@ def filter_socioeconomic_data(va_boundary) -> None:
     with open(src, "rb") as f:
         naics_est_gdp, zcta_pop_20, regions_pop_df, zcta_business_gdf, states_gdf = pickle.load(f)
 
-    # None of these five tables carries a state abbreviation directly (the
-    # STABBR column p_econ_data.py's docstring implied doesn't survive into
-    # the saved pickle on the reference machine). naics_est_gdp and
-    # regions_pop_df do carry a county FIPS ("GeoFips") whose first two
-    # digits are the state FIPS — use that to derive the Virginia ZCTA set,
-    # then filter every other table by ZCTA membership in it.
+    # None of these tables carries a state abbreviation directly, but
+    # naics_est_gdp/regions_pop_df have a county FIPS ("GeoFips") whose first
+    # two digits are the state FIPS -- use that to get the Virginia ZCTA
+    # set, then filter everything else by ZCTA membership.
     if "GeoFips" not in regions_pop_df.columns:
         raise ValueError(
             "Expected a GeoFips column on regions_pop_df to derive Virginia ZCTAs "

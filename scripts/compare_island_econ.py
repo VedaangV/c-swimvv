@@ -1,22 +1,12 @@
 """
-Phase 5/6 diagnostic: diff an island's va_ghosh_results.csv against the
-unmodified baseline's, computing the whole-Virginia $/day impact
-difference per scenario/confidence/sector. Automates a step that's been
-done manually (both CSVs pasted into chat, compared by eye) for every
-island run so far (A, B, AB, C, D, E, F) -- worth having as a real
-script now that it's clearly a recurring need, not a one-off.
+Phase 5/6 diagnostic: diffs an island's va_ghosh_results.csv against the
+baseline's, giving the whole-Virginia $/day impact difference per
+scenario/confidence/sector. Was being done by eye for every island run (A,
+B, AB, C, D, E, F); now a script.
 
-SIGN CONVENTION
-----------------
-va_ghosh_results.csv's total_impact is always <= 0 (a shock, i.e. a
-loss). diff = island_total_impact - baseline_total_impact:
-- diff > 0 means island_total_impact is LESS negative than baseline's --
-  the loss shrank, islanding helped for that scenario/sector.
-- diff < 0 means island_total_impact is MORE negative -- the loss grew,
-  islanding hurt.
-This matches every prior island's own informal framing in
-ISLANDING_MITIGATION_PLAN.md ("net-negative for whole-Virginia $/day" =
-diff < 0 summed across sectors).
+Sign convention: total_impact is always <= 0. diff = island - baseline, so
+diff > 0 means the loss shrank (islanding helped); diff < 0 means it grew
+(islanding hurt).
 
 Usage:
     python scripts/compare_island_econ.py --island f

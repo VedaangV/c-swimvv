@@ -3,26 +3,21 @@ Build the Virginia+PJM EHV transmission network from scratch.
 
 Mirrors preprocess/06_dl_power_grid_update.py (OSM substation download) and
 preprocess/08_p_power_grid.py (EHV line/substation processing + graph
-topology), scoped to the PJM region instead of all of CONUS. The topology
-functions in preprocess/08_p_power_grid.py (graph_node_edges, get_EHV_lines,
-...) are geography-agnostic, so they are imported and reused unmodified via
-importlib (the file's numeric-prefixed name isn't a valid `import` target).
-The only piece that differs from the US script is *what* gets fed in:
-- substations come from a PJM-bbox Overpass query instead of all of CONUS
-- transmission lines are filtered to intersect the PJM boundary instead of
-  being spatially joined against FERC order-1000 regions (nerc_gdf.geojson);
-  the FERC-derived REGION_ID/REGIONS columns that get_EHV_lines() expects
-  are stubbed with a constant "PJM" value since nothing downstream keys off
-  their real content for the admittance-matrix build.
+topology), scoped to PJM instead of all of CONUS. The topology functions
+from 08_p_power_grid.py are geography-agnostic and get imported unmodified
+via importlib (its numeric-prefixed filename isn't a valid import target).
+What differs from the US pipeline is just the inputs: substations come from
+a PJM-bbox Overpass query instead of all of CONUS, and lines are filtered to
+the PJM boundary geographically instead of sjoin'd against FERC regions
+(REGION_ID/REGIONS are stubbed to "PJM" since nothing downstream needs their
+real content).
 
-Output is written to configs.virginia_config.VA_DATA_DIR / "grid_processed",
-i.e. laid out exactly like DATA_DIR / "grid_processed" in the US pipeline.
-That lets scripts/build_admittance_matrix.py's load_and_process_data() work
-against Virginia data completely unmodified, by passing VA_DATA_DIR in place
-of DATA_DIR (see scripts/run_virginia_admittance.py).
+Output lands in VA_DATA_DIR/grid_processed, laid out like the US pipeline's
+DATA_DIR/grid_processed, so build_admittance_matrix.py works against it
+unmodified by just swapping in VA_DATA_DIR.
 
-Does not download HIFLD lines or run Overpass again if cached files already
-exist under VA_NETWORK_DIR.
+Skips the Overpass/HIFLD download if cached files already exist under
+VA_NETWORK_DIR.
 """
 
 import importlib.util
@@ -54,23 +49,20 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 GRID_OUT_DIR = VA_NETWORK_DIR.parent / "grid_processed"
 GRID_OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-# overpass.openstreetmap.ru dropped: unreachable from the reference machine's
-# network (hard connect timeout on every attempt, not a query/rate problem —
-# see VIRGINIA_ADAPTATION.md). Keeping it in the list just burns ~4 minutes
-# per state for a server that will never answer.
+# overpass.openstreetmap.ru dropped: hard connect timeout on every attempt from
+# this machine (not a rate-limit thing, see VIRGINIA_ADAPTATION.md) -- kept in
+# the list it'd just burn ~4 min/state for nothing.
 OVERPASS_SERVERS = [
     "https://overpass-api.de/api/interpreter",
     "https://overpass.kumi.systems/api/interpreter",
 ]
 
-# Public Overpass instances reject/rate-limit requests without a real
-# User-Agent — overpass-api.de returned HTTP 406 and kumi returned HTTP 429
-# with an explicit "include a meaningful User-Agent string" message when this
-# script sent Python's default `python-requests/x.y.z` UA.
+# Public Overpass instances reject requests without a real User-Agent --
+# overpass-api.de returned 406 and kumi 429 on the default requests UA.
 OVERPASS_USER_AGENT = "c-swim-virginia-adaptation/1.0 (+https://github.com/VedaangV/c-swimvv)"
 
-# Same voltage standardization used by preprocess/08_p_power_grid.py, copied
-# verbatim so the two pipelines classify voltage classes identically.
+# Same voltage standardization as preprocess/08_p_power_grid.py, copied
+# verbatim so both pipelines classify voltage classes identically.
 LINE_VOLTAGE_RATINGS = {
     345: 345, 230: 230, 450: 500, 500: 500, 765: 765, 250: 230, 400: 345,
     232: 230, 1000: 765, 220: 230, 273: 230, 218: 230, 236: 230, 287: 345,
@@ -96,14 +88,11 @@ p08 = _load_module("_c_swim_preprocess_08", "preprocess/08_p_power_grid.py")
 # Step A: PJM substations from OpenStreetMap (Overpass)
 # --------------------------------------------------------------------------
 def _query_overpass(query: str, timeout: int = 180, retries: int = 2) -> dict | None:
-    """POST an Overpass query, trying each server in OVERPASS_SERVERS in turn,
-    with a proper User-Agent set (public instances return 406/429 against
-    requests' default UA). Logs the real reason for every failed attempt —
-    a single whole-PJM query was silently swallowing these errors behind a
-    fast failure, leaving only the last attempt's message visible in the
-    logs. Chunking by state (see download_pjm_substations) also means a
-    failed state doesn't need to retry as aggressively as a one-shot
-    whole-region query, so the retry budget here is intentionally small."""
+    """POST an Overpass query, trying each server in OVERPASS_SERVERS in turn.
+    Logs the real reason for every failed attempt rather than just the last
+    one. Retry budget is small since we chunk by state (see
+    download_pjm_substations), so a failed state doesn't need to retry as
+    hard as a one-shot whole-region query would."""
     headers = {"User-Agent": OVERPASS_USER_AGENT}
     for url in OVERPASS_SERVERS:
         for attempt in range(retries):
@@ -126,12 +115,10 @@ def _substations_from_nodeway(data: dict | None) -> gpd.GeoDataFrame:
     if not data or not data.get("elements"):
         return gpd.GeoDataFrame()
     gdf = p06.process_substations(p06.convert_to_geodataframe(data))
-    # convert_to_geodataframe() sets 'osmid' as the index; bring it back out
-    # to a real column so it lines up with _substations_from_relations()'s
-    # output (which never indexes by osmid) — concatenating an osmid-index
-    # frame with an osmid-column frame and then reset_index()/renaming was
-    # producing two separate "osmid" columns and tripping GeoPandas' "cannot
-    # contain duplicated column names" check on write.
+    # convert_to_geodataframe() indexes by osmid; pull it back into a real
+    # column so it lines up with _substations_from_relations()'s output,
+    # which doesn't index by osmid. Otherwise concatenating the two ends up
+    # with two "osmid" columns and GeoPandas refuses to write that.
     return gdf.reset_index() if len(gdf) else gdf
 
 
@@ -161,13 +148,10 @@ def download_pjm_substations() -> gpd.GeoDataFrame:
     """Download PJM substations (nodes/ways + relations) from OSM, one state
     at a time.
 
-    A single query over the whole 13-state PJM bounding box was getting
-    rejected quickly by overpass-api.de/kumi (public-instance query-size/rate
-    limits) while overpass.openstreetmap.ru genuinely timed out at the
-    network level. Chunking by state — the same strategy
-    preprocess/06_dl_power_grid_update.py already uses for the full-CONUS
-    download — keeps each request small enough to succeed, and a failure on
-    one state no longer loses the other twelve.
+    A single query over the whole 13-state PJM bbox gets rejected by
+    overpass-api.de/kumi's size/rate limits. Chunking by state (same
+    approach as preprocess/06_dl_power_grid_update.py) keeps requests small
+    enough to succeed and means one failed state doesn't sink the rest.
     """
     cache = VA_NETWORK_DIR / "va_pjm_substations_raw.geojson"
     if cache.exists():
@@ -257,8 +241,8 @@ def load_and_process_pjm_transmission_lines(pjm_boundary) -> gpd.GeoDataFrame:
 
     gdf = gdf[gdf.intersects(pjm_boundary)].copy()
 
-    # get_EHV_lines()'s downstream FERC filter step only ever selects these
-    # columns by name; PJM has no FERC-region concept, so stub a constant.
+    # get_EHV_lines() just selects these columns by name downstream; PJM has
+    # no FERC-region concept so stub a constant.
     gdf["REGION_ID"] = "PJM"
     gdf["REGIONS"] = "PJM"
 

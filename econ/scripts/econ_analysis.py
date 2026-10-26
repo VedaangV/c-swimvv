@@ -1,17 +1,8 @@
 """Economic analysis module for GIC impact assessment.
-Author: Dennies Bor & Edward Oughton
 
-Runs three I-O loss models on the Monte Carlo scenario outputs from
-p_gic_files.py:
-
-    run_ghosh_value_added            Supply-driven Ghosh shock on sector VA.
-    run_leontief_consumption         Demand-driven Leontief shock on PCE +
-                                     government final demand only.
-    run_leontief_consumption_production
-                                     Demand-driven Leontief shock on PCE +
-                                     government + investment + exports.
-
-All three write CSVs with the same schema.
+Runs three I-O loss models (Ghosh value-added, Leontief consumption,
+Leontief consumption+production) on the Monte Carlo scenario outputs
+from p_gic_files.py and writes CSVs with a common schema.
 """
 
 import copy

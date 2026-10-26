@@ -1,20 +1,12 @@
 """
-Sector-level economic-impact figures for Virginia, mirroring the national
-report's plot_econo_naics() (viz/plots.py) -- direct + indirect impact per
-NAICS sector, stacked horizontal bars, one panel per storm severity.
+Sector-level economic-impact figures for Virginia: direct + indirect
+impact per NAICS sector, stacked horizontal bars, one panel per storm
+severity. Mirrors viz/plots.py's plot_econo_naics() but plots in $M/day
+instead of Bn $/day, since Virginia's totals are too small for the
+national-scale units to read well.
 
-Not a call into plot_econo_naics() itself: that function hardcodes
-SCALE=1_000 and the "Bn $/day" label, which suits national totals (multi-
-billion-dollar/day) but would squash Virginia's totals (tens to low
-hundreds of $M/day) into bars a fraction of a unit wide. This script
-reuses its layout, color palette (viz/plot_utils.ECON_PALETTES), and
-sector taxonomy, but plots in $M/day so the bars are readable at VA's
-scale.
-
-Reads scripts/run_virginia_econ_analysis.py's three output CSVs directly
-(same schema as the national econ_analysis.py results: scenario,
-confidence, sector, direct_shock, total_impact, multiplier_effect) and
-produces one PNG per model under VA_FIGURES_DIR.
+Reads scripts/run_virginia_econ_analysis.py's output CSVs and produces
+one PNG per model under VA_FIGURES_DIR.
 
 Usage:
     python viz/plot_virginia_econ_impact.py
@@ -34,9 +26,8 @@ SCALE = 1.0
 LABEL = "Impact ($M/day)"
 SCENARIOS = ["100-year", "150-year", "200-year", "250-year"]
 
-# Same palette as viz/plots.py's plot_econo_naics() / viz/plot_utils.ECON_PALETTES,
-# inlined here so this script doesn't pull in plot_utils' cartopy dependency
-# just for two color dicts it doesn't otherwise need.
+# same palette as plot_utils.ECON_PALETTES, inlined to avoid pulling in
+# plot_utils' cartopy dependency just for two color dicts
 ECON_PALETTES = {
     "ghosh": {"direct": "darkred", "indirect": "lightcoral", "label": "Ghosh (supply-driven)"},
     "leontief_cons": {"direct": "#0072B2", "indirect": "#56B4E9", "label": "Leontief consumption"},

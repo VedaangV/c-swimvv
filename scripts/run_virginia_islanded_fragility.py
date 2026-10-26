@@ -1,26 +1,15 @@
 """
-Phase 5 of ISLANDING_MITIGATION_PLAN.md (part 1 of 2): fragility Monte
-Carlo on Phase 4's islanded GIC output.
+Fragility Monte Carlo on an island's islanded GIC output.
 
-Thin wrapper around scripts/run_virginia_fragility.py's now-parameterized
-main() (gnd_gic_dir/econ_dir) -- reads an island's ground-GIC realizations
-instead of the baseline, writes to that island's econ dir instead of
-VA_ECON_DIR. Everything else (the exposure gpkg, the fragility model
-itself) is identical to the baseline run -- same population/GDP/facility
-exposure per substation, same convergence draws, same sequential
-(workers=1) execution for the same Windows-safety reason documented in
-run_virginia_fragility.py's module docstring.
+Thin wrapper around run_virginia_fragility.py's main(), pointed at an
+island's ground-GIC realizations and econ dir instead of the baseline.
+Everything else (exposure data, model, sequential execution) is identical
+to the baseline run.
 
-Takes an island_id ("a", "b", ...; default "a") -- reads/writes
-configs.virginia_config.get_island_dirs(island_id)'s paths, same
-generalization and reasoning as scripts/run_virginia_islanded_gic.py.
+Heavy step -- expect it to take as long as or longer than the GIC Monte
+Carlo, a good overnight job. Checkpoints in batches of 50, resumable.
 
-WARNING (same as the underlying script): this is the heavy step. Expect it
-to take as long as or longer than the GIC Monte Carlo itself -- a good
-overnight job, same as run_virginia_islanded_gic.py was. It checkpoints in
-batches of 50 realizations and is resumable if interrupted.
-
-Run after a completed scripts/run_virginia_islanded_gic.py (same island_id).
+Run after a completed run_virginia_islanded_gic.py (same island_id).
 
 Usage:
     python scripts/run_virginia_islanded_fragility.py [--island b] [--limit N]

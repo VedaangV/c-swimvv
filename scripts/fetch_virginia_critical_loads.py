@@ -1,57 +1,22 @@
 """
-Phase 2b of ISLANDING_MITIGATION_PLAN.md: pull critical-facility locations
+Phase 2b of ISLANDING_MITIGATION_PLAN.md: pulls critical-facility locations
 (hospitals, wastewater treatment plants, data centers) into a standardized
-CSV that scripts/compute_virginia_criticality.py folds into the Substation
-Criticality Index as a fourth term (critical_load_i).
+CSV that compute_virginia_criticality.py folds into the SCI as a fourth
+term (critical_load_i).
 
-MUST BE RUN ON A MACHINE WITH NORMAL INTERNET ACCESS -- NOT IN THE SANDBOX
-THIS PIPELINE WAS DEVELOPED IN. That sandbox's network-egress policy blocks
-every ArcGIS/GIS-hosting domain outright (confirmed directly), so none of
-the URLs below could be verified from there.
+MUST BE RUN ON A MACHINE WITH NORMAL INTERNET ACCESS, NOT THIS PIPELINE'S
+DEV SANDBOX -- its network-egress policy blocks every ArcGIS/GIS domain, so
+none of the URLs below could be verified from there.
 
-Three ingestion paths, per category, since a live-queryable API isn't
-always findable/reliable:
-
-1. CRITICAL_LOAD_API_SOURCES: category -> ArcGIS FeatureServer query URL,
-   fetched live via requests. Currently just wastewater treatment plants
-   (an EPA-hosted layer that worked on the first real run).
-
-2. CRITICAL_LOAD_OSM_SOURCES: category -> Overpass QL tag filter, fetched
-   live via the same OVERPASS_SERVERS/retry pattern
-   scripts/build_virginia_network.py already uses (successfully, on this
-   same project) for substations -- duplicated here rather than imported,
-   matching this project's existing convention (see virginia_config.py's
-   TRAFO_WINDING_R comment) of keeping Virginia-side scripts independent of
-   each other rather than cross-importing small constants.
-
-   - Hospitals moved here after HIFLD Open's Hospitals dataset turned out
-     to no longer be public (DHS restricted several HIFLD Open layers,
-     hospitals included, to HIFLD Secure/agency-only access) -- confirmed
-     by hand-searching hub.arcgis.com and finding nothing. OSM's
-     amenity=hospital tag is near-universally applied since navigation
-     apps depend on it.
-   - Data centers moved here after Loudoun County's GeoHub turned out not
-     to carry a data-center dataset either (only an ArcGIS Hub
-     "Experience" map with no discoverable underlying FeatureServer URL).
-     OSM's telecom=data_center tag exists and NoVA's major named
-     facilities (Equinix, Digital Realty, etc.) are prominent enough that
-     some are mapped, but coverage here is expected to be less complete
-     than hospitals -- some operators deliberately avoid being mapped.
-     Worth sanity-checking the fetched count against known public counts
-     of Loudoun-area data centers before trusting it as a real census.
-
-3. CRITICAL_LOAD_LOCAL_SOURCES: category -> filename stem, for a file
-   downloaded by hand. Empty for now -- both categories that once needed
-   this (hospitals, data centers) moved to the OSM path above once their
-   original API/portal leads dead-ended. Kept in place, tested, and
-   documented since a future category may still need it.
-
-   To add a local-file category: download the dataset yourself, save it
-   under CRITICAL_LOAD_LOCAL_DIR as "<stem>.geojson"/".json"/".csv", and
-   list it in CRITICAL_LOAD_LOCAL_SOURCES. No other code changes needed --
-   the loader auto-detects point geometry (GeoJSON/JSON) or a lat/lon
-   column pair (CSV, matched case-insensitively against a small set of
-   common names) and filters to Virginia the same way the other paths do.
+Three ingestion paths per category, since a live API isn't always
+findable: CRITICAL_LOAD_API_SOURCES (ArcGIS FeatureServer query, currently
+just EPA wastewater plants), CRITICAL_LOAD_OSM_SOURCES (Overpass tag
+filter -- hospitals and data centers ended up here after their original
+HIFLD/Loudoun-GeoHub leads turned out to be non-public or nonexistent), and
+CRITICAL_LOAD_LOCAL_SOURCES (manually downloaded file, currently empty --
+add a category by dropping a file under CRITICAL_LOAD_LOCAL_DIR as
+"<stem>.geojson/.json/.csv" and listing it here; the loader auto-detects
+geometry or lat/lon columns).
 
 Usage:
     python scripts/fetch_virginia_critical_loads.py
@@ -76,9 +41,8 @@ CRITICAL_LOAD_API_SOURCES = {
     "wastewater_treatment_plant": "https://services.arcgis.com/XG15cJAlne2vxtgt/ArcGIS/rest/services/wastewater_treatment_plants_epa_frs/FeatureServer/0/query",
 }
 
-# Same servers/UA as build_virginia_network.py's OVERPASS_SERVERS --
-# overpass.openstreetmap.ru dropped there for being unreachable from the
-# reference machine; kept consistent here rather than re-discovering that.
+# Same servers/UA as build_virginia_network.py's OVERPASS_SERVERS (ru
+# instance dropped there as unreachable).
 OVERPASS_SERVERS = [
     "https://overpass-api.de/api/interpreter",
     "https://overpass.kumi.systems/api/interpreter",
@@ -92,9 +56,8 @@ CRITICAL_LOAD_OSM_SOURCES = {
     "data_center": "telecom=data_center",
 }
 
-# category -> filename stem for a manually-downloaded file. See module
-# docstring for exactly where to download each one from. Empty for now --
-# see point 3 in the module docstring.
+# category -> filename stem for a manually-downloaded file. Empty for now,
+# see module docstring.
 CRITICAL_LOAD_LOCAL_DIR = VA_NETWORK_DIR / "raw_critical_loads"
 CRITICAL_LOAD_LOCAL_SOURCES = {}
 
@@ -111,18 +74,12 @@ def _fetch_category(category: str, query_url: str, bbox: tuple, retries: int = 3
     """Query one FeatureServer layer for point features intersecting bbox
     (minx, miny, maxx, maxy in EPSG:4326), paging via resultOffset until a
     page comes back EMPTY -- not just shorter than requested. Many ArcGIS
-    services cap responses at their own server-side maxRecordCount (often
-    1000) regardless of resultRecordCount, so "got fewer than asked for"
-    does NOT reliably mean "that was the last page": a real run against the
-    wastewater-plants source returned exactly 1000 features on page 1 and
-    an earlier version of this function stopped there, silently dropping
-    anything past record 1000. Paging by the actual count returned (not
-    PAGE_SIZE) and stopping only on a genuinely empty page fixes that
-    regardless of what cap any given server enforces.
+    services cap at their own server-side maxRecordCount regardless of
+    resultRecordCount (wastewater plants came back at exactly 1000 on page
+    1 once), so "fewer than asked for" doesn't mean "last page".
 
-    Returns category/name/latitude/longitude rows -- an empty DataFrame
-    (not an exception) on failure, so one bad URL doesn't stop the other
-    categories from being fetched."""
+    Returns an empty DataFrame (not an exception) on failure, so one bad
+    URL doesn't stop the other categories."""
     headers = {"User-Agent": FETCH_USER_AGENT}
     minx, miny, maxx, maxy = bbox
     params = {
@@ -174,13 +131,8 @@ def _fetch_category(category: str, query_url: str, bbox: tuple, retries: int = 3
 
         features = data.get("features", [])
         if not features:
-            # The only reliable "last page" signal across arbitrary ArcGIS
-            # services: a page with zero features. Trusting "got fewer than
-            # requested" instead is what silently truncated wastewater
-            # treatment plants at 1000 records on the real run that found
-            # this bug -- the server's own maxRecordCount capped every page
-            # at 1000 regardless of resultRecordCount=2000, so a short page
-            # never actually meant "no more data."
+            # Only reliable "last page" signal; a short page doesn't mean
+            # done (see docstring, maxRecordCount capping).
             break
 
         for feat in features:
@@ -197,9 +149,8 @@ def _fetch_category(category: str, query_url: str, bbox: tuple, retries: int = 3
 
         params["resultOffset"] += len(features)
     else:
-        # Loop ran max_pages times and every single page was non-empty --
-        # never saw the natural end-of-data signal, unlike every other exit
-        # path above (each of which already logged its own reason).
+        # Never saw an empty page -- hit max_pages instead of the natural
+        # end-of-data signal.
         logger.warning(
             f"{category}: stopped after {max_pages} consecutive non-empty pages "
             "without ever seeing an empty one -- results may be truncated."
@@ -210,9 +161,8 @@ def _fetch_category(category: str, query_url: str, bbox: tuple, retries: int = 3
 
 
 def _query_overpass(query: str, timeout: int = 120, retries: int = 2) -> dict | None:
-    """POST an Overpass query, trying each server in OVERPASS_SERVERS in
-    turn -- same pattern as build_virginia_network.py's _query_overpass()
-    (public instances reject requests without a real User-Agent)."""
+    """POST an Overpass query, trying each server in turn -- same pattern
+    as build_virginia_network.py's _query_overpass()."""
     headers = {"User-Agent": OVERPASS_USER_AGENT}
     for url in OVERPASS_SERVERS:
         for attempt in range(retries):
@@ -233,10 +183,8 @@ def _query_overpass(query: str, timeout: int = 120, retries: int = 2) -> dict | 
 
 def _fetch_osm_category(category: str, tag_filter: str, bbox: tuple) -> pd.DataFrame:
     """Query Overpass for node/way/relation elements matching tag_filter
-    (e.g. 'amenity=hospital') inside bbox (minx, miny, maxx, maxy in
-    EPSG:4326). Uses `out center;` uniformly so every element type yields a
-    single lat/lon: nodes report their own coordinates as the "center" of a
-    zero-size element, ways/relations report their centroid."""
+    (e.g. 'amenity=hospital') inside bbox. Uses `out center;` so every
+    element type yields a single lat/lon."""
     minx, miny, maxx, maxy = bbox
     tag_key, tag_value = tag_filter.split("=", 1)
     tag_expr = f'["{tag_key}"="{tag_value}"]'
@@ -281,11 +229,9 @@ def _find_col(columns, candidates) -> str | None:
 
 
 def _load_local_category(category: str, stem: str) -> pd.DataFrame:
-    """Read a manually-downloaded file for one category. Tries, in order,
-    <stem>.geojson, <stem>.json (point geometry read via geopandas), then
-    <stem>.csv (lat/lon columns auto-detected by name). Returns an empty
-    DataFrame -- not an exception -- when no file exists yet, since Phase
-    2b's categories are each independently optional."""
+    """Read a manually-downloaded file for one category: tries <stem>.geojson,
+    <stem>.json, then <stem>.csv (lat/lon auto-detected). Returns an empty
+    DataFrame, not an exception, when no file exists yet."""
     for ext in (".geojson", ".json"):
         path = CRITICAL_LOAD_LOCAL_DIR / f"{stem}{ext}"
         if path.exists():
@@ -331,11 +277,8 @@ def _load_local_category(category: str, stem: str) -> pd.DataFrame:
 
 def fetch_and_filter_to_virginia() -> pd.DataFrame:
     va_boundary = get_virginia_boundary()
-    # Small buffer for the API path's bbox query (cheap server-side
-    # pre-filter only); the precise boundary check below is what actually
-    # decides Virginia membership for every category, API or local, same
-    # pattern used throughout this pipeline (restrict_to_virginia,
-    # _log_orphan_va_membership).
+    # Buffer is just a cheap server-side pre-filter for the bbox query; the
+    # precise boundary check below decides real Virginia membership.
     minx, miny, maxx, maxy = va_boundary.buffer(0.3).bounds
 
     all_rows = []

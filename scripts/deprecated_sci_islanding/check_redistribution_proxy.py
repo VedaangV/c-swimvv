@@ -1,69 +1,40 @@
 """
-Cheap, graph-only proxy for GIC redistribution risk -- no Monte Carlo, no
-stochastic transformer/grounding sampling, just a deterministic linear
-solve on the network's real electrical structure. Prompted by Phase 6's
-finding that SCI's existing betweenness term (Freeman 1977's shortest-path
-betweenness -- the "traffic takes the single cheapest route" model) can't
-see this coming, because GIC doesn't route that way: it's Ohm's-law
-current splitting across every parallel path simultaneously, in inverse
-proportion to resistance. See ISLANDING_MITIGATION_PLAN.md's Phase 6
-section for the full discussion.
+Cheap, graph-only proxy for GIC redistribution risk -- no Monte Carlo, just
+a deterministic linear solve on the network's electrical structure. SCI's
+betweenness term uses shortest-path betweenness, which doesn't capture how
+GIC actually redistributes: current splits across every parallel path at
+once (Ohm's law), not along a single cheapest route.
 
-Uses current-flow betweenness centrality instead (Newman, M.E.J. (2005),
-"A measure of betweenness centrality based on random walks," Social
-Networks 27(1), 39-54 -- derives it via random walks weighted by edge
-conductance; Brandes, U. & Fleischer, D. (2005), "Centrality Measures
-Based on Current Flow," STACS 2005 -- proves the random-walk formulation
-is identical to literally modeling the graph as a resistor network and
-computing current flow directly, and gives the efficient graph-Laplacian-
-based computation networkx's current_flow_betweenness_centrality()
-implements). This is the electrically-faithful analog of betweenness for
-a network where things actually split across parallel paths rather than
-picking one shortest route -- the same Laplacian/nodal-admittance math
-scripts/build_admittance_matrix.py's real GIC solve uses, just without
-the stochastic sampling layered on top for the real Monte Carlo.
+Uses current-flow betweenness centrality instead (Newman 2005; Brandes &
+Fleischer 2005), which is equivalent to modeling the graph as a resistor
+network and solving for current flow directly -- same idea as the real
+GIC solve in build_admittance_matrix.py, without the Monte Carlo sampling.
 
 METHOD
 ------
-1. Attach real conductance (1/R, summed over each graph edge's parallel
-   physical lines) to va_network_graph.pkl's edges, from the same
-   transmission_lines.csv R values scripts/build_admittance_matrix.py's
-   network_admittance()/get_injection_currents() actually use -- not the
-   voltage-based cost proxy select_virginia_island.py uses for a different
-   purpose (weighting cut cost, not modeling current flow).
-2. Compute current-flow betweenness on the full baseline graph (all paths
-   available, including through the candidate island).
-3. Remove the candidate island's boundary edges, restrict to the largest
-   remaining non-island component (current-flow betweenness requires a
-   connected graph -- the island becomes its own separate component once
-   every boundary edge is cut, by construction), and recompute.
-4. Rank non-island substations by the biggest INCREASE -- substations that
-   picked up current-carrying importance specifically because the cut
-   removed edges that used to serve as one of several parallel routes
-   (whether for island-adjacent traffic or for other pairs entirely
-   within the rest of the network -- removing any edge changes the whole
-   network's Laplacian, not just paths that used that exact edge).
+1. Attach real conductance (1/R, from transmission_lines.csv) to the
+   graph's edges -- not the voltage-based cost proxy select_virginia_
+   island.py uses, which weights cut cost rather than modeling flow.
+2. Compute current-flow betweenness on the full baseline graph.
+3. Remove the candidate island's boundary edges, keep only the largest
+   remaining non-island component (current-flow betweenness needs a
+   connected graph), and recompute.
+4. Rank non-island substations by the biggest increase -- these are the
+   ones that picked up current-carrying importance because the cut
+   removed one of their parallel routes.
 
-VALIDATION -- NOT YET DONE, NEXT STEP FOR THE USER
+VALIDATION -- NOT YET DONE
 ---------------------------------------------------
-The real, Monte-Carlo-measured hotspots are already known: 96396693 for
-Island A, 81597861 for Island B (both consistently the #1 non-island GIC
-riser across scenario types, per scripts/compare_virginia_gic.py's real
-output). Run this for both islands and check whether either substation
-shows up near the top of the predicted list. If it does, this becomes a
-legitimate cheap pre-screening tool for future candidate islands --
-letting select_virginia_island.py's growth or a candidate-comparison step
-avoid boundaries this proxy flags as likely to concentrate redistribution,
-without paying the ~3000-iteration Monte Carlo cost just to find out.
+Known real hotspots from the Monte Carlo runs: 96396693 for Island A,
+81597861 for Island B. Run this for both and check whether either shows
+up near the top of the predicted list -- if so, this becomes a legitimate
+cheap pre-screen for future candidate islands, without paying the full
+Monte Carlo cost.
 
 PERFORMANCE, UNTESTED AT REAL SCALE
 ------------------------------------
-current_flow_betweenness_centrality's solve cost grows with graph size;
-solver="lu" (sparse LU factorization, the default here) should handle a
-~2600-node, sparse power-grid graph in well under the time the real Monte
-Carlo takes, but this has not been run against the real VA+PJM graph in
-this sandbox (no real data available here) -- report back how long it
-actually takes.
+solver="lu" should handle a ~2600-node graph well under Monte Carlo time,
+but hasn't been run against the real VA+PJM graph yet.
 
 Usage:
     python scripts/check_redistribution_proxy.py [--island a] [--top N]

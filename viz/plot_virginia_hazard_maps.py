@@ -1,53 +1,22 @@
 """
-Virginia-scoped version of the national paper's Figure 3 ("Extreme-value
-geoelectric field maps and induced transmission-line voltages for
-different return periods") -- a (storm) x (E-field, transmission-line
-voltage) grid of maps, restricted to Virginia instead of CONUS.
+Virginia-scoped version of the national paper's Figure 3 (extreme-value
+geoelectric field maps + induced transmission-line voltages by return
+period) -- a (storm) x (E-field, line voltage) grid of maps, restricted
+to Virginia instead of CONUS.
 
-Reuses viz/plots.py's low-level plotting primitives completely unmodified
--- plot_transmission_lines(), plot_mt_sites_e_fields_contour(),
-create_custom_colorbar_e_field() (the red-asterisk-max colorbar), and
-carto_e_field() (the per-panel map builder that calls the first three) --
-plus viz/plot_utils.py's setup_map() and extract_line_coordinates(). Only
-three things are Virginia-specific, each reimplemented rather than editing
-shared code in place (this project's established convention -- see e.g.
-scripts/run_virginia_econ_analysis.py's get_confidence_intervals_
-unrounded()):
-1. generate_virginia_grid_and_mask() -- viz/plot_utils.py's
-   generate_grid_and_mask() masks its interpolated E-field grid to
-   get_conus_polygon(); this masks to configs.virginia_config.
-   get_virginia_boundary() instead, and grids only the area around
-   Virginia's own bounding box (not the full MT-site footprint the
-   national version spans), so the fixed resolution isn't spent mostly on
-   masked-out area outside the state.
-2. load_va_network_lines() -- econ/scripts/l_prepr_data.py's
-   load_network_data() reads the NATIONAL admittance_matrix/
-   transmission_lines.csv; this reads Virginia's own
-   data/virginia/admittance_matrix/transmission_lines.csv the same way
-   (WKT geometry column parsed via shapely.wkt.loads).
-3. The E-field/voltage return-period data itself comes from
-   scripts.est_gic.load_and_process_gic_data() -- the SAME function
-   scripts/run_virginia_gic.py already uses to drive the real Virginia GIC
-   solve (proven working against real data throughout this project) --
-   pointed at data/virginia/statistical_analysis/
-   va_geomagnetic_data_return_periods.h5 via the DATA_LOC/results_path
-   parameters that function already exposes. No monkeypatching needed
-   here since, unlike econ/scripts/l_prepr_data.py's version of this
-   function, est_gic.py's takes DATA_LOC and results_path as real
-   parameters, not hardcoded module globals.
+Reuses viz/plots.py's plotting primitives (carto_e_field() etc.)
+unmodified. Virginia-specific pieces are reimplemented here rather than
+editing shared code in place: generate_virginia_grid_and_mask() (masks
+to Virginia's boundary, not CONUS), load_va_network_lines() (reads
+Virginia's own transmission_lines.csv), and the return-period data via
+scripts.est_gic.load_and_process_gic_data() pointed at Virginia's h5 file.
 
-carto_e_field() reads `line_coordinates` as a MODULE GLOBAL on viz.plots
-(set by that module's own create_hazard_maps() before calling it, not
-passed as a parameter) -- this script monkeypatches that same global
-(`vplots.line_coordinates = ...`) rather than editing carto_e_field() to
-take it as an argument, for the same "don't edit shared code" reason.
+Note: carto_e_field() reads `line_coordinates` as a module global on
+viz.plots rather than a parameter, so this script monkeypatches that
+global (`vplots.line_coordinates = ...`) instead of editing the function.
 
-Run after scripts/run_virginia_gic.py (confirms the VA GIC context loads
-cleanly) and scripts/recompute_virginia_line_voltages.py (produces
-va_geomagnetic_data_return_periods.h5). Untested against real data in
-this session -- report back exactly what happens on first run, including
-how far it gets before any error (same caution every other real-data
-Virginia script in this project has needed on first run).
+Run after scripts/run_virginia_gic.py and
+scripts/recompute_virginia_line_voltages.py.
 
 Usage:
     python viz/plot_virginia_hazard_maps.py
@@ -76,9 +45,7 @@ logger = setup_logger(log_file="logs/plot_virginia_hazard_maps.log")
 VA_RESULTS_PATH = "statistical_analysis/va_geomagnetic_data_return_periods.h5"
 VA_VIZ_DATA_DIR = VA_DATA_DIR / "viz_data"
 
-# Same three return periods + Gannon as the reference figure. Any subset of
-# scripts.est_gic.return_periods works -- these three were picked to match
-# the paper's Figure 3 panel count exactly.
+# same three return periods + Gannon as the reference figure (matches Figure 3's panel count)
 RETURN_PERIODS_TO_PLOT = [100, 150, 250]
 
 STORM_TITLES = {
@@ -91,8 +58,7 @@ STORM_TITLES = {
 
 def load_va_network_lines() -> gpd.GeoDataFrame:
     """Same pattern as econ/scripts/l_prepr_data.py's load_network_data(),
-    pointed at Virginia's own admittance-matrix table -- see module
-    docstring point 2."""
+    pointed at Virginia's own admittance-matrix table."""
     tl_path = VA_DATA_DIR / "admittance_matrix" / "transmission_lines.csv"
     df_lines = pd.read_csv(tl_path)
     df_lines["geometry"] = df_lines["geometry"].apply(wkt.loads)
@@ -110,22 +76,16 @@ def generate_virginia_grid_and_mask(
     filename="grid.pkl",
     method: str = "cubic",
 ):
-    """Virginia-scoped fork of viz/plot_utils.py's generate_grid_and_mask()
-    -- see module docstring point 1. Interpolates from the full MT-site
-    point set (mt_coordinates/e_field_values span Virginia+PJM, which
-    helps accuracy near Virginia's own borders) but only grids and masks
-    the area around `boundary_polygon`'s own bounding box, not the whole
-    site footprint.
+    """Virginia-scoped fork of viz/plot_utils.py's generate_grid_and_mask().
+    Interpolates from the full Virginia+PJM MT-site set (helps accuracy
+    near the state border) but only grids/masks the area around
+    `boundary_polygon`.
 
-    method="cubic" (Clough-Tocher, scipy.interpolate.griddata) rather than
-    the national version's "linear" -- linear interpolation over a sparse,
-    irregular MT-site point set produces visible flat-shaded triangular
-    facets (the underlying Delaunay triangulation showing through),
-    especially over Virginia's smaller/sparser site footprint than CONUS.
-    Cubic can overshoot near sharp gradients, including into small
-    negative values, which isn't physical for a field/voltage MAGNITUDE
-    -- clipped to 0 below. Pass method="linear" to reproduce the original,
-    faceted-but-overshoot-free behavior if preferred."""
+    method="cubic" instead of the national version's "linear" -- linear
+    interpolation over this sparser site set shows visible triangulation
+    facets. Cubic can overshoot into small negative values near sharp
+    gradients (not physical for a magnitude), so it's clipped to 0 below.
+    Pass method="linear" for the original faceted-but-no-overshoot behavior."""
     if mt_coordinates.shape[0] != e_field_values.shape[0]:
         logger.warning("Number of MT-site points and E-field values don't match.")
 
@@ -180,8 +140,7 @@ def main():
     logger.info("Extracting Virginia+PJM line coordinates...")
     line_coords_file = VA_VIZ_DATA_DIR / "va_line_coords.pkl"
     line_coordinates, valid_indices = extract_line_coordinates(df_lines, filename=line_coords_file)
-    # carto_e_field()/plot_transmission_lines() read this as a module
-    # global on viz.plots, not a parameter -- see module docstring.
+    # read as a module global by carto_e_field()/plot_transmission_lines(), not a parameter
     vplots.line_coordinates = line_coordinates
 
     stacked_e = np.abs(np.hstack([e_fields[p] for p in RETURN_PERIODS_TO_PLOT] + [gannon_e]))
@@ -199,14 +158,9 @@ def main():
 
     projection = ccrs.LambertConformal(central_longitude=-78.5, central_latitude=37.5)
     fig = plt.figure(figsize=(8.5, 10.5), dpi=300)
-    # wspace wider than a typical 2-column grid: the E-field colorbar
-    # (column 0's right edge) sits BETWEEN the two map columns, not at an
-    # outer figure edge like the voltage colorbar does -- too little gap
-    # here lets its "E Field (V/km)" ylabel get overdrawn by column 1's
-    # own opaque map background (added to the figure afterward, in the
-    # same row), which is why that label was going missing while the
-    # voltage side's identical label (at the unconstrained right edge)
-    # rendered fine.
+    # extra wspace: the E-field colorbar sits between the two columns (not
+    # at an outer edge like the voltage one), so it needs room or its
+    # ylabel gets overdrawn by the next column's map.
     gs = gridspec.GridSpec(4, 2, figure=fig, wspace=0.45, hspace=0.2)
 
     num = 0

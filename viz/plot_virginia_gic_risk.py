@@ -1,31 +1,18 @@
 """
-Visualize Virginia's GIC vulnerability ranking from
-scripts/extract_virginia_results.py's output.
+Visualizes Virginia's GIC vulnerability ranking from
+scripts/extract_virginia_results.py's output: a map of substations
+sized/colored by mean 100-year ground GIC (with top substations
+labeled), plus a horizontal bar chart of the top-N ranked substations.
 
-Produces a two-panel figure:
-  left  — map of all Virginia substations sized/colored by mean 100-year
-          ground GIC, with the VA+PJM network lines as geographic context
-          and the top-vulnerability substations labeled
-  right — horizontal bar chart of the top-N substations ranked by
-          100-year mean ground GIC, with 95th-percentile as an error bar
+Ranks on *ground* GIC (va_ground_gic_summary.csv), not winding GIC --
+ground GIC is what the fragility Monte Carlo uses for the headline
+economic results, and is already a single per-substation scalar. Units
+are "A" (combined across all three phases), not winding GIC's "A/ph" --
+don't copy that label over if editing this file.
 
-Ranks on *ground* GIC (va_ground_gic_summary.csv), not winding GIC
-(va_gic_summary.csv) -- ground GIC is the same physical quantity
-scripts/run_virginia_fragility.py's fragility Monte Carlo uses for the
-headline economic-impact results, and is already a single per-substation
-scalar rather than something assembled from several transformers' separate
-windings. See scripts/extract_virginia_results.py's summarize_ground_gic()
-for the full reasoning. Units are "A" (already combined across all three
-phases by solve_total_nodal_gic()'s *3 term), not winding GIC's "A/ph"
-(per-phase) convention -- don't copy that label over if editing this file.
-
-`sub_id` (used throughout scripts/extract_virginia_results.py) is the raw
-OSM-derived SS_ID string build_admittance_matrix.py assigns every
-substation -- not a human-readable name, since most OSM power=substation
-features in this region carry no name tag. The real name (when OSM has
-one) lives in grid_processed/ss_df.pkl's SS_NAME column, which never made
-it into substation_info.csv or any downstream GIC file. This script joins
-it back in for labeling; substations OSM never named fall back to an
+`sub_id` is the raw OSM-derived SS_ID, not a human-readable name (most
+OSM substations here have no name tag). This script joins in a real
+name where available (ss_df.pkl's SS_NAME), falling back to an
 operator/voltage/location label instead of a bare ID.
 
 Usage:
@@ -55,17 +42,12 @@ RANK_COL_P95 = "GIC_100_p95"
 TOP_N_LABELED = 10
 TOP_N_BAR = 15
 
-# Manual stand-in for substations that still fall back to bare
-# coordinates after every automatic tier (external name, OSM SS_NAME,
-# county/city reverse-geocode) -- either tl_2022_us_county.zip hasn't
-# been fetched on this machine, or (rarely) a point lands outside every
-# county polygon. Keyed on the exact "(lat, lon)" string the coordinate-
-# only fallback produces. These are APPROXIMATE placements from general
-# Virginia geography, not a verified geocode -- replace with real names
-# (or let the county reverse-geocode take over once tl_2022_us_county.zip
-# is fetched) when available; flag any that look wrong. Shared by every
-# figure that calls _load_substation_labels(), not just one script's own
-# chart, so a substation gets the same stand-in name everywhere it shows up.
+# Manual stand-ins for substations that fall back to bare coordinates
+# after every automatic naming tier. Keyed on the exact "(lat, lon)"
+# string the fallback produces. These are APPROXIMATE placements, not a
+# verified geocode -- replace with real names when available. Shared by
+# every figure calling _load_substation_labels(), so the stand-in name
+# stays consistent everywhere a substation shows up.
 COORD_NAME_OVERRIDES = {
     "(37.25, -77.61)": "Chesterfield County",
     "(37.45, -77.63)": "Chesterfield County",
@@ -79,28 +61,15 @@ COORD_NAME_OVERRIDES = {
 def _load_substation_labels(include_coords: bool = False) -> dict:
     """sub_id (SS_ID) -> a human-readable label.
 
-    Priority for the name portion: (1) a real name from an external
-    source (scripts/fetch_virginia_substation_names.py's optional
-    va_substation_names.csv -- HIFLD's Electric Substations dataset,
-    Wikidata, and/or a live OSM Overpass query, nearest-neighbor matched
-    to this project's own substations); (2) OSM's own name tag from
-    ss_df.pkl, where present; (3) the Virginia county or independent city
-    the point falls in (reverse-geocoded against TIGER county polygons);
-    (4) no name at all, if even that reverse geocode isn't available or
-    the point lands outside every county polygon. Each tier falls through
-    gracefully to the next -- external names and the county polygons are
-    both optional (the fetch scripts may never have been run, or a
-    substation may not have matched within the snap tolerance), same
-    "absence isn't an error" pattern used throughout this pipeline's
-    optional data sources.
+    Priority: (1) external name (va_substation_names.csv, from HIFLD/
+    Wikidata/OSM Overpass); (2) OSM's own name tag; (3) county/city
+    reverse-geocode against TIGER polygons; (4) no name, if even that
+    fails. Each tier is optional and falls through to the next.
 
-    include_coords=True appends "(lat, lon)" to every label, named or
-    not -- useful for a chart like viz/plot_virginia_winding_gic_ranking.py
-    where the label is the only place a reader can see where a substation
-    is. Left False by default because this function's OTHER caller (this
-    module's own main(), below) already annotates each label directly at
-    its point on a map -- appending the same coordinates there would just
-    repeat, right next to the point, the location the point already shows.
+    include_coords=True appends "(lat, lon)" to every label -- useful for
+    a chart like plot_virginia_winding_gic_ranking.py where the label is
+    the only place a reader sees location. Left False here since this
+    module's own map already shows the point directly.
     """
     external_names = {}
     names_path = VA_NETWORK_DIR / "va_substation_names.csv"
@@ -119,7 +88,7 @@ def _load_substation_labels(include_coords: bool = False) -> dict:
         ss_df = pickle.load(f)
 
     labels = {}
-    unnamed = []  # (ss_id, lat, lon), resolved against counties in one batched sjoin below
+    unnamed = []  # (ss_id, lat, lon); resolved in one batched sjoin below
     for _, row in ss_df.iterrows():
         ss_id = str(row["SS_ID"])
         coord_suffix = f" ({row['lat']:.2f}, {row['lon']:.2f})" if include_coords else ""
@@ -157,13 +126,8 @@ def _load_substation_labels(include_coords: bool = False) -> dict:
 
     for ss_id, lat, lon in unnamed:
         county = county_names.get(ss_id)
-        # coord_str is always computed (both as the override dict's key,
-        # and as the absolute-last-resort label), but only INCLUDED in
-        # the final label when include_coords=True -- same gating as the
-        # named tiers above, and for the same reason: a caller annotating
-        # directly at the point (e.g. this module's own map, or
-        # viz/plot_island_maps.py) wants just the name, not the name
-        # plus the coordinates its own point already shows.
+        # coord_str doubles as the override-dict key and the last-resort
+        # label; only appended to named labels when include_coords=True.
         coord_str = f"({lat:.2f}, {lon:.2f})"
         coord_suffix = f" {coord_str}" if include_coords else ""
         if pd.notna(county):
@@ -171,9 +135,7 @@ def _load_substation_labels(include_coords: bool = False) -> dict:
         elif coord_str in COORD_NAME_OVERRIDES:
             labels[ss_id] = f"{COORD_NAME_OVERRIDES[coord_str]}{coord_suffix}"
         else:
-            # No real name, no county match, and no manual override --
-            # coordinates alone (always shown here regardless of
-            # include_coords, since it's the only identifying info at all).
+            # no name, no county, no override -- coords are all we've got
             labels[ss_id] = coord_str
 
     return labels

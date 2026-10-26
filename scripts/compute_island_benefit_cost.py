@@ -1,84 +1,41 @@
 """
-Phase 5, part 2: implements the benefit-cost accounting
-ISLANDING_MITIGATION_PLAN.md's Phase 5 section designed but that was
-never actually coded. scripts/compare_island_econ.py's diff is purely
-the fragility-driven $/day change from redistributed GIC -- it never
-included a switching-labor cost or the island's own temporary-outage
-cost (nothing in the GIC/fragility physics models supply continuity at
-all -- an island's own $/day loss and gain come entirely from its
-transformers' own GIC-driven failure probability changing when the
-boundary is cut, not from any accounting of whether the island keeps
-serving its own load during the disconnection).
+Phase 5, part 2: the benefit-cost accounting ISLANDING_MITIGATION_PLAN.md's
+Phase 5 section designed but never coded. compare_island_econ.py's diff is
+just the fragility-driven $/day change from redistributed GIC -- it doesn't
+account for switching-labor cost or the island's own outage while
+disconnected. This adds both, unconditionally (every island is assumed to
+go dark for ASSUMED_DISCONNECTION_HOURS).
 
-This adds the two missing cost terms: a switching-labor cost and the
-island's own temporary-outage cost, unconditionally -- every island is
-assumed to actually go dark for ASSUMED_DISCONNECTION_HOURS, full stop.
+Stranded-substation cost: cutting an island's boundary can split off
+non-member substations too, if the island happened to sit on their only
+path to the rest of PJM (seen for real on Island K: 51 components after the
+cut). check_island_connectivity() in run_virginia_islanded_gic.py persists
+which substations end up stranded (va_island_{id}_stranded.json); this
+script charges them the same outage-cost formula as members, reported
+separately as stranded_outage_cost_musd. Islands run before this file
+existed get zero stranded cost and a warning -- their total_cost_musd is an
+optimistic lower bound until re-run.
 
-STRANDED-SUBSTATION COST -- ADDED
-------------------------------------------------
-Cutting an island's boundary can incidentally split the REST of the
-network too: some non-member substation's only path to the rest of PJM
-sometimes runs through the island (observed for real on Island K --
-cutting its boundary split the rest of the network into 51 components).
-Those substations are just as disconnected as the island's own members
-for the cut's duration, but until now paid no own-outage cost anywhere
--- compute_island_gdp() only ever summed GDP over the formal `members`
-list. run_virginia_islanded_gic.py's check_island_connectivity() now
-persists exactly which substations end up stranded (va_island_{id}_
-stranded.json); this script reads that file and charges them the same
-disconnection-hours GDP-loss formula as members, reported as a separate
-stranded_outage_cost_musd line item so the two are never conflated.
-Islands run before this fix have no such file -- main() logs a loud
-warning and proceeds with zero stranded cost (numerically identical to
-the old behavior) rather than failing, but their total_cost_musd should
-be treated as an optimistic lower bound until re-run.
+Generation credit removed (not just unused): an earlier version discounted
+own-outage cost by matched EIA-860 generation coverage. Dropped because
+Island G, selected with no generation requirement, beat Island F (9/10 vs
+6/10 net-positive scenarios) -- see
+scripts/deprecated_sci_islanding/README.md for the reasoning; the retired
+code lives there too.
 
-GENERATION CREDIT -- REMOVED, NOT JUST UNUSED
-------------------------------------------------
-An earlier version of this script discounted own-outage cost by matched
-EIA-860 generation coverage (Island F's generation-anchored seed
-covering some of its own demand-proxy). That's gone now, not just
-disabled: the direct comparison settled it -- Island G, selected with no
-generation requirement at all, reached 9/10 scenarios net-positive,
-beating Island F's 6/10, without constraining seed choice to wherever
-generation happens to exist. Requiring or crediting generation looks
-like a net cost to candidate quality, not a benefit, once the
-redistribution-sensitivity method itself is doing the selecting -- see
-scripts/deprecated_sci_islanding/README.md's "Generation-anchoring is
-retired too" section for the full reasoning, and
-scripts/deprecated_sci_islanding/check_island_generation.py /
-virginia_demand_proxy.py for the retired mechanism itself (moved there,
-not deleted).
-
-ASSUMPTIONS (all explicitly flagged order-of-magnitude choices, none are
-real utility data -- same spirit as the NZ paper's own ~$250k switching-
-cost assumption):
-
-- SWITCHING_COST_PER_LINE_USD: labor cost per boundary line switched,
-  scaled by the island's boundary_line_count (already computed by
-  scripts/select_island_by_redistribution_sensitivity.py, stored in
-  va_island_{id}.json). Set an order of magnitude below the NZ paper's
-  total ~$250k figure -- that figure covered a much larger multi-line
-  national switching plan, not one island's boundary.
-- SWITCHING_EVENTS_PER_STORM: an island's boundary lines get switched
-  TWICE per storm, not once -- opened going into the storm's peak-risk
-  window (see ASSUMED_DISCONNECTION_HOURS below) and reclosed coming out
-  of it, both real labor events. Earlier versions of this script priced
-  only one switching operation per line; fixed to 2 so switching cost
-  reflects the full round trip rather than silently assuming free
-  reconnection.
-- ASSUMED_DISCONNECTION_HOURS: how long the island is assumed offline
-  during a storm's peak-risk window -- sizes the OWN-OUTAGE COST term
-  (island members' annual GDP x hours/year-hours), unconditionally now.
-- REPAIR_DURATION_DAYS_VARIANTS: how many days the fragility-driven
-  $/day diff should be integrated over to become a one-time $ benefit,
-  representing how long a damaged-but-unprotected transformer would
-  keep costing money before repair/replacement -- the plan's own stated
-  "12-24+ months to replace a damaged large power transformer" reasoning
-  for why avoiding transformer damage matters at all. Reported as a
-  low/mid/high range (180/365/730 days) rather than one arbitrary
-  number, since this is the single biggest uncertainty in the whole
-  calculation -- collapsing it to a point estimate would hide that.
+Assumptions below are order-of-magnitude guesses, not real utility data
+(same spirit as the NZ paper's ~$250k switching-cost assumption):
+- SWITCHING_COST_PER_LINE_USD: an order of magnitude below the NZ paper's
+  total figure, since that covered a national multi-line plan, not one
+  island's boundary.
+- SWITCHING_EVENTS_PER_STORM = 2: lines get opened before the storm and
+  reclosed after -- two real labor events, not one.
+- ASSUMED_DISCONNECTION_HOURS: how long the island is offline during a
+  storm's peak-risk window; sizes the own-outage cost term.
+- REPAIR_DURATION_DAYS_VARIANTS: how many days to integrate the $/day diff
+  over to get a one-time benefit (stands in for how long a damaged
+  transformer stays broken -- 12-24+ months per the plan). Reported as
+  low/mid/high (180/365/730d) since this is the biggest uncertainty here.
 
 Usage:
     python scripts/compute_island_benefit_cost.py --island g
@@ -115,8 +72,8 @@ def load_island(island_id: str) -> dict:
 
 
 def compute_island_gdp(members: list) -> dict:
-    """Island-wide population and annual GDP, summed across members --
-    sizes the OWN-OUTAGE COST term below."""
+    """Island-wide population and annual GDP, summed across members. Sizes
+    the own-outage cost term below."""
     exposure = crit.load_economic_exposure()
     island_exposure = exposure[exposure["sub_id"].isin(members)]
     island_population = float(island_exposure["population"].sum())
@@ -129,14 +86,11 @@ def compute_island_gdp(members: list) -> dict:
 
 
 def load_stranded_substations(island_id: str) -> list:
-    """Reads va_island_{id}_stranded.json (written by run_virginia_
-    islanded_gic.py's check_island_connectivity()) -- substations outside
-    the formal island that ended up in their own disconnected component
-    when the island's boundary was cut. Missing file means the island was
-    run before this file existed; returns [] and logs a warning rather
-    than failing, so old islands still compute (with the same optimistic-
-    lower-bound total_cost_musd they always had), but the gap is visible
-    rather than silent."""
+    """Reads va_island_{id}_stranded.json (written by check_island_
+    connectivity() in run_virginia_islanded_gic.py) -- substations outside
+    the formal island that got stranded in their own component when the
+    boundary was cut. Missing file means the island predates this
+    tracking; logs a warning and returns [] rather than failing."""
     path = VA_NETWORK_DIR / f"va_island_{island_id}_stranded.json"
     if not path.exists():
         logger.warning(
@@ -156,11 +110,9 @@ def load_stranded_substations(island_id: str) -> list:
 
 
 def compute_stranded_gdp(stranded_substations: list) -> dict:
-    """Same population/GDP lookup as compute_island_gdp(), but for
-    substations stranded outside the island as a side effect of the
-    boundary cut rather than formal members -- kept as a separate result
-    (not merged into compute_island_gdp's members list) so the two never
-    get silently conflated in logs or output."""
+    """Same population/GDP lookup as compute_island_gdp(), for substations
+    stranded by the cut rather than formal members. Kept separate so the
+    two never get conflated in logs/output."""
     if not stranded_substations:
         return {"stranded_population": 0.0, "stranded_gdp_total_musd": 0.0}
     exposure = crit.load_economic_exposure()
@@ -174,11 +126,10 @@ def compute_stranded_gdp(stranded_substations: list) -> dict:
 def compute_own_outage_cost_musd(
     island_gdp_total_musd: float, disconnection_hours: float = ASSUMED_DISCONNECTION_HOURS
 ) -> dict:
-    """Island's annual GDP x (disconnection hours / hours-in-a-year) --
-    the fraction of a year's economic output assumed lost while the
-    island is disconnected. Unconditional -- see module docstring's
-    GENERATION CREDIT -- REMOVED, NOT JUST UNUSED for why this is no
-    longer discounted by anything."""
+    """Island's annual GDP x (disconnection hours / hours in a year) --
+    the fraction of a year's output assumed lost while disconnected.
+    Unconditional; see module docstring on why generation credit was
+    dropped."""
     musd = island_gdp_total_musd * (disconnection_hours / (365 * 24))
     return {"musd": musd}
 
@@ -221,7 +172,7 @@ def main(
     )
 
     econ_result = econ_cmp.main(island_id=island_id, confidence="mean")
-    by_scenario = econ_result["by_scenario"]  # $M/day diff, positive = benefit
+    by_scenario = econ_result["by_scenario"]  # $M/day diff; positive = benefit
 
     rows = []
     for variant_name, days in REPAIR_DURATION_DAYS_VARIANTS.items():

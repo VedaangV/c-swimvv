@@ -1,45 +1,24 @@
 """
-Pull real numbers for a paper table (e.g. "Estimated daily economic and
-human impact on Virginia by storm return period") straight from this
-project's own saved econ-pipeline output, instead of hand-copying/
-recomputing them.
+Pulls real numbers for a paper table (e.g. "Estimated daily economic and
+human impact on Virginia by storm return period") from this project's saved
+econ-pipeline output instead of hand-copying/recomputing them.
 
-Reads two files scripts/run_virginia_econ_analysis.py already produces:
-- va_leontief_consumption_production_results.csv (or the ghosh/leontief_
-  cons equivalent, via --model) -- per scenario x confidence(mean/p5/p95)
-  x sector rows of direct_shock/total_impact. "Total loss" sums
-  |total_impact| across sectors; "Direct loss" sums |direct_shock| --
-  same aggregation viz/plot_utils.py's export_econ_comparison_table()
-  already uses for its own comparison table, just not scaled to $B and not
-  restricted to one model.
-- va_confidence_intervals.csv (get_confidence_intervals_unrounded()'s
-  output) -- already has POP_AFFECTED/EST_TOTAL rows with mean/p5/p95 per
-  scenario; this is where "population/establishments at risk" come from,
-  not the IO model output.
+Reads two files run_virginia_econ_analysis.py already produces:
+- va_leontief_consumption_production_results.csv (or ghosh/leontief_cons
+  via --model) for total/direct loss, summing |total_impact|/|direct_shock|
+  across sectors per scenario x confidence.
+- va_confidence_intervals.csv for POP_AFFECTED/EST_TOTAL (population /
+  establishments at risk).
 
-HONEST LIMITATION ON "MEAN +/- ...": this pipeline's saved output only
-ever has mean/p5/p95, never a directly-computed sample standard deviation
-(get_confidence_intervals_unrounded() computes np.percentile, not
-np.std, and nothing downstream retains per-realization total_impact
-after the IO transform). What this script reports is HALF THE WIDTH OF
-THE EMPIRICAL 90% INTERVAL -- (p95 - p5) / 2 -- deliberately matching
-viz/plot_virginia_econ_impact.py's own convention (direct_err/indirect_
-err/total_err in that file), not a normal-distribution-derived estimate
-of the true standard deviation. An earlier revision of this script used
-(p95 - p5) / (2 * 1.645) instead (solving for sigma as if the 5th/95th
-percentiles sat at exactly mean +/- 1.645*sigma, the normal-distribution
-relationship) -- mechanically different from, and about 1.645x smaller
-than, what this file now computes, which is exactly why those two
-scripts' numbers disagreed for the same underlying data when compared
-side by side against a real rendered figure. Standardized on the plain
-half-CI-width here because it doesn't assert normality at all -- it's
-just literally half of the reported p5-p95 range -- whereas the 1.645
-divisor's implicit normality assumption doesn't hold for fragility-driven
-quantities that are often heavily right-skewed (see viz/plot_virginia_
-winding_gic_ranking.py's docstring for a documented real case of that
-skew in this same pipeline). Report it in the paper as "half the 90% CI
-width," not as a standard deviation, unless a true bootstrap/realization-
-level std is computed separately.
+Caveat on "mean +/- ...": the saved output only has mean/p5/p95, never a
+real sample std. What this reports is HALF THE WIDTH OF THE EMPIRICAL 90%
+INTERVAL, (p95-p5)/2 -- matching plot_virginia_econ_impact.py's convention.
+An earlier revision divided by 2*1.645 instead (treating p5/p95 as exactly
+mean +/- 1.645*sigma), which gives a ~1.645x smaller number and is why two
+versions of this disagreed before. Stuck with the plain half-CI-width since
+it doesn't assume normality, which these fragility-driven, often
+right-skewed quantities don't satisfy anyway. Report it as "half the 90% CI
+width" in the paper, not as a standard deviation.
 
 Usage:
     python scripts/extract_econ_table_values.py --model leontief_cp
@@ -63,12 +42,9 @@ MODEL_FILES = {
 
 def _match_scenario(all_scenarios, period_key: str) -> str:
     """Find the one scenario string containing `period_key` (e.g. '100'
-    matches '100-year', 'gannon' matches 'gannon-year' or the raw,
-    uncleaned 'e_gannon-year-hazard A/ph' -- scenario naming differs
-    between the IO-model output (cleaned by _clean_scenario_name()) and
-    va_confidence_intervals.csv (raw ds.scenario.values), so this matches
-    by substring against whichever form is present rather than assuming
-    one exact string)."""
+    matches '100-year'). Matches by substring since scenario naming differs
+    between the IO-model output (cleaned) and va_confidence_intervals.csv
+    (raw), so we can't assume one exact string."""
     needle = f"{period_key}-year"
     matches = [s for s in all_scenarios if needle in str(s)]
     if not matches:
@@ -80,11 +56,8 @@ def _match_scenario(all_scenarios, period_key: str) -> str:
 
 def econ_loss_row(io_df: pd.DataFrame, period_key: str) -> dict:
     """Total/direct loss (mean +/- half the 90% CI width, $M/day), summed
-    over sectors, for one scenario. half_ci = (p95 - p5) / 2 -- matches
-    viz/plot_virginia_econ_impact.py's own direct_err/indirect_err/
-    total_err convention exactly (see module docstring's HONEST
-    LIMITATION section for why that convention, not a normal-
-    distribution-derived std, is what this reports)."""
+    over sectors, for one scenario. See module docstring for why half-CI-
+    width rather than a std."""
     scenario = _match_scenario(io_df["scenario"].unique(), period_key)
     scen_df = io_df[io_df["scenario"] == scenario]
 
@@ -102,8 +75,7 @@ def econ_loss_row(io_df: pd.DataFrame, period_key: str) -> dict:
 
 def risk_counts_row(ci_df: pd.DataFrame, period_key: str) -> dict:
     """Population/establishments at risk (thousands, mean only -- the
-    table template shows these as plain approximate values, not
-    mean+/-std)."""
+    table just shows plain approximate values here, not mean+/-std)."""
     scenario = _match_scenario(ci_df["scenario"].unique(), period_key)
     scen_df = ci_df[ci_df["scenario"] == scenario]
 

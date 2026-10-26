@@ -1,22 +1,11 @@
 """
-Composite the three per-island map figures (viz/plot_island_maps.py's
-output, run with --no-inset) into one 7x10in figure for the paper --
-replaces three separate Figure 12/13/14 floats with one, per review
-feedback asking for exactly that.
+Stacks the three per-island map figures (from viz/plot_island_maps.py,
+run with --no-inset) into one 7x10in figure, replacing three separate
+Figure 12/13/14 floats with one per review feedback.
 
-LAYOUT: a plain vertical stack, one island after another, each resized
-to the same page width and its own natural (undistorted) height -- no
-letterboxing, no forced common aspect ratio, no per-panel layout math.
-Earlier versions of this script tried to make the three panels the same
-*size* (forcing the underlying maps to one aspect ratio, or letterboxing
-each into an identical square cell); the actual ask is simpler than
-that -- just the three individual map figures, each shown at its own
-natural shape, listed one after another instead of as three separate
-floats. The only thing dropped relative to the original per-island
-figures is each one's own "Location in Virginia" locator inset (run
-plot_island_maps.py with --no-inset) -- all three islands sit in the
-same part of the state, so repeating that inset on every panel added
-little.
+Each panel keeps its own natural aspect ratio (no letterboxing/forced
+sizing) and drops its individual locator inset since all three islands
+sit in the same part of the state.
 
 Run viz/plot_island_maps.py --island a g o --no-inset first.
 
@@ -60,8 +49,7 @@ def build_layout(paths, labels, out_path):
     canvas_w = int(FIG_W_IN * DPI)
     max_canvas_h = int(FIG_H_IN * DPI)
 
-    # Each image at full canvas width, its own natural height (aspect
-    # ratio preserved, not forced to match the others).
+    # full canvas width, natural (unforced) height per image
     row_h = [int(canvas_w / (img.width / img.height)) for img in imgs]
     overhead = n * LABEL_H_PX + (n - 1) * GAP_PX
     natural_image_h = sum(row_h)

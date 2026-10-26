@@ -1,28 +1,16 @@
 """
-Sanity-check figure for scripts/select_virginia_island.py's output (Phase 3
-of ISLANDING_MITIGATION_PLAN.md), before Phase 4 builds on top of it.
+Sanity-check figure for scripts/select_virginia_island.py's output --
+confirms Island A is a sane, contiguous cluster before anything else
+builds on it (a past density bug was only caught by eyeballing a map, not
+by numeric checks).
 
-This project's own history is the reason to plot before proceeding: Phase
-2b's density bug (the 707088636 outlier -- see ISLANDING_MITIGATION_PLAN.md)
-was only caught by looking at the SCI map, not by numeric top-10 checks.
-Same logic applies here -- confirm Island A is a sane, contiguous cluster
-before Phase 4's re-solve builds on it.
+Two-panel figure: a map of all substations colored by SCI with Island A's
+members highlighted/numbered in growth order and the cut boundary edges
+drawn as dashed lines, plus a text table of the growth trace.
 
-Produces a two-panel figure, styled consistently with viz/plot_virginia_
-criticality.py and viz/plot_virginia_gic_risk.py:
-  left  — map of all Virginia substations colored by SCI (background
-          context, same palette as plot_virginia_criticality.py), with
-          Island A's members highlighted and numbered in growth order, and
-          the cut boundary edges drawn as thick dashed lines
-  right — the growth trace as a step-by-step table (value/cost/ratio at
-          each addition) — small enough that a bar chart would be less
-          informative than just reading the numbers
-
-Boundary edges (for the cut lines) aren't stored as (u, v) substation pairs
-in va_island_a.json -- only the flat boundary_line_ids list is. Recomputed
-here via select_virginia_island._boundary_edges(G, members) instead of
-duplicating that logic -- same graph, same induced-cut definition, single
-source of truth for what counts as a boundary.
+Boundary edges aren't stored directly in va_island_a.json (only the flat
+boundary_line_ids list is), so they're recomputed here via
+select_virginia_island._boundary_edges(G, members).
 
 Usage:
     python viz/plot_virginia_island.py
@@ -49,13 +37,9 @@ logger = setup_logger(log_file="logs/plot_virginia_island.log")
 
 
 def _load_substation_labels() -> dict:
-    """Same tiered fallback as plot_virginia_criticality.py/plot_virginia_
-    gic_risk.py's identically-named helper (external names -> OSM name ->
-    operator/voltage/coords -> bare "Unnamed" + coords, always with sub_id
-    appended on the fallback tiers to guarantee visual uniqueness). Kept as
-    a third copy rather than factored out, matching this project's existing
-    convention of duplicating this specific helper per plot script instead
-    of introducing a shared viz module for a small self-contained function."""
+    """Same tiered fallback as plot_virginia_criticality.py's identically
+    named helper (external name -> OSM name -> operator/voltage/coords ->
+    "Unnamed" + coords). Duplicated rather than shared, per project convention."""
     external_names = {}
     names_path = VA_NETWORK_DIR / "va_substation_names.csv"
     if names_path.exists():
@@ -150,11 +134,9 @@ def main():
         edgecolor="0.5", linewidth=0.2, zorder=3, alpha=0.6,
     )
 
-    # Cut boundary: thick dashed lines between island members and their
-    # immediate outside neighbors -- straight lines between substation
-    # coordinates, matching the resolution the algorithm actually operated
-    # on (the collapsed substation-pair graph, not individual physical
-    # line geometries).
+    # Cut boundary: straight lines between island members and their
+    # outside neighbors, at substation-pair resolution (not real line
+    # geometry, since that's what the algorithm itself operates on).
     node_coords = {n: (G.nodes[n].get("longitude"), G.nodes[n].get("latitude")) for n in G.nodes()}
     for u, v in boundary:
         lon_u, lat_u = node_coords.get(u, (None, None))

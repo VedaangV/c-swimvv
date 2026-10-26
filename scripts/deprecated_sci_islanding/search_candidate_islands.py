@@ -1,38 +1,16 @@
 """
-Phase 6 extension: systematic search for more individually-positive
-islands (like Island B was for the real Gannon storm), now that the A+B
-combined run confirmed island effects are ~additive (see
-ISLANDING_MITIGATION_PLAN.md's Phase 6 section -- AB's diff matched A's
-diff + B's diff to within ~0.5 percentage points across all 30 scenarios).
-That kills "protect more regions to be safe" as a strategy -- stacking a
-net-negative island (A) onto a net-positive one (B) didn't average out,
-it erased B's win. The path to a consistently-positive whole-Virginia
-result is finding MORE individually-positive candidates and combining
-only those (which additivity says should compound favorably), not
-combining indiscriminately.
+Systematic search for more individually-positive islands, now that A+B
+combined showed island effects are roughly additive -- stacking a
+net-negative island onto a net-positive one erased the win rather than
+averaging out. So the path forward is finding more individually-positive
+candidates, not combining indiscriminately.
 
-For each new island id in --islands (e.g. c d e), in order, fully:
-1. Select it (scripts/select_virginia_island.py), excluding every
-   previously-selected island's members + boundary neighbors -- both
-   already on disk (--exclude) AND the ones this run itself just picked,
-   so every candidate stays mutually non-adjacent. Keeps the additivity
-   property clean if a promising combination gets tested later, and
-   avoids one candidate accidentally growing into another's territory.
-2. Re-solve GIC with its boundary removed (scripts/run_virginia_islanded_
-   gic.py) -- heavy, ~as long as the original baseline Monte Carlo.
-3. Fragility Monte Carlo (scripts/run_virginia_islanded_fragility.py) --
-   also heavy, comparable weight.
-4. Econ IO analysis (scripts/run_virginia_islanded_econ_analysis.py) --
-   fast.
-5. Both diagnostic comparisons (scripts/compare_island_gic.py, scripts/
-   compare_virginia_gic.py) -- fast, so morning-after results are
-   immediately readable (local protection + redistribution hotspots)
-   without any further manual steps.
-
-Sequential, one candidate fully through before starting the next -- each
-stage is itself checkpointed/resumable (the fragility Monte Carlo in
-particular), so an interruption partway through an overnight run still
-leaves whichever candidates finished with complete, usable results.
+For each new island id in --islands (e.g. c d e), in order, runs the full
+pipeline: select (excluding prior islands' members + boundary neighbors,
+plus any just picked this run), re-solve GIC, fragility Monte Carlo, econ
+analysis, then the diagnostic comparisons. Sequential and one candidate
+fully through before the next, since each stage is itself resumable, so
+an interrupted overnight run still leaves finished candidates usable.
 
 Usage:
     python scripts/search_candidate_islands.py --islands c d e
@@ -87,9 +65,9 @@ def main(new_island_ids: list, base_exclude: list):
                 f"===== Candidate {island_id} FAILED after {elapsed/60:.1f} minutes: {e!r} ====="
             )
             logger.error(
-                f"Stopping here -- {island_id} was added to the exclusion list before failing, so "
-                "re-running this script with the remaining islands (or after fixing whatever broke) "
-                f"won't re-select something overlapping it. Completed so far: {completed}."
+                f"Stopping here -- {island_id} is already in the exclusion list, so re-running "
+                f"with the remaining islands won't re-select something overlapping it. "
+                f"Completed so far: {completed}."
             )
             failed.append(island_id)
             break

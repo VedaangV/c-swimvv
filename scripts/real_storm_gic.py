@@ -1,51 +1,31 @@
 """
 Shared real-storm, single-iteration GIC scoring -- the actual-physics
-replacement for current_flow_betweenness_centrality's isotropic,
-direction-blind proxy (see VIRGINIA_ADAPTATION.md Section 5.5-5.6 for why
-that proxy can't see a real storm's directional forcing, and Section 5.4
-of ISLANDING_MITIGATION_PLAN.md's Phase 6c/6d for the empirical case --
-Island G's own members' GIC flipped sign between the real Gannon storm
-and the (non-independently-directional) 100-year return-period scenario).
+replacement for current_flow_betweenness_centrality's direction-blind proxy
+(see VIRGINIA_ADAPTATION.md 5.5-5.6 for why that proxy misses a storm's
+directional forcing; Island G's members' GIC flipped sign between the real
+Gannon storm and the 100-year scenario, per ISLANDING_MITIGATION_PLAN.md
+5.4/Phase 6c-6d).
 
-Used by two different callers, at two different points in the pipeline:
-- scripts/validate_island_directionality.py -- a post-hoc filter on one
-  already-selected finalist candidate.
-- scripts/select_island_by_redistribution_sensitivity.py -- IN-LOOP
-  scoring, replacing current_flow_betweenness_centrality inside
-  evaluate_cut() so real-storm robustness drives which candidate gets
-  selected in the first place, not just a check applied after the fact.
+Used by validate_island_directionality.py (post-hoc filter on one finalist)
+and select_island_by_redistribution_sensitivity.py (in-loop scoring,
+replacing current_flow_betweenness_centrality inside evaluate_cut()).
 
-REAL_HISTORICAL_STORMS is the actual directional test: gannon, halloween,
-and st_patricks are the only three scenarios in this pipeline with their
-own independently-measured per-line E-field magnitude AND polarity (see
-scripts/est_gic.py's load_and_process_gic_data -- the nine return-period
-scenarios share Gannon's own polarity, scaled only in magnitude, so they
-are not independent directional evidence).
+REAL_HISTORICAL_STORMS = gannon, halloween, st_patricks -- the only three
+scenarios with independently measured E-field polarity (the nine
+return-period scenarios just scale Gannon's polarity in magnitude, so they
+aren't independent directional evidence; see est_gic.py's
+load_and_process_gic_data).
 
-WORST-CASE, NOT AVERAGE
--------------------------
-A candidate's redistribution cost is scored as the MAX (worst) of its
-real redistribution cost across the three real storms, not their mean.
-The goal stated directly by the person running this project was "a method
-that is positive for all cases" -- an average can be small while one
-storm direction is quietly terrible; a max can't hide that. A candidate
-only scores well here if it doesn't hurt badly under ANY of the three
-real directions.
+Scored as the MAX redistribution cost across the three storms, not the
+mean -- the goal is "positive for all cases," and an average can hide one
+bad direction.
 
-COST, BLUNTLY
----------------
-One single-iteration real solve already computes ALL twelve storm
-columns at once (one admittance-matrix factorization, many injection
-vectors) -- see run_monte_carlo() in scripts/run_virginia_gic.py -- so
-scoring against three real storms costs the SAME as scoring against one:
-one solve per candidate, not three. That solve still isn't free (~20-40s
-observed on real data, dominated by admittance-matrix construction and
-the per-period GIC calculation, not by load_gic_context()'s one-time
-setup). A search that evaluates dozens of candidates (n_seed_candidates
-seeds, plus every boundary-adjacent candidate at every growth step) will
-take proportionately longer than the old current-flow-betweenness proxy,
-which was cheap enough not to think about. Lower --n-seed-candidates
-and/or --max-size if a full search run is impractically slow.
+Cost note: one single-iteration solve already computes all twelve storm
+columns at once (run_monte_carlo() in run_virginia_gic.py), so scoring
+three real storms costs the same as scoring one -- but that solve still
+isn't free (~20-40s observed), so a search over many candidates will be
+slower than the old cheap betweenness proxy. Lower --n-seed-candidates
+and/or --max-size if a full search is too slow.
 """
 
 import pandas as pd
@@ -63,22 +43,15 @@ ALL_STORM_PERIODS = REAL_HISTORICAL_STORMS + RETURN_PERIOD_STORMS
 def solve_single_iteration(ctx: dict, exclude_line_ids: set, gic_dir, gnd_gic_dir) -> pd.DataFrame:
     """One real admittance/GIC solve (iteration 0 only) with
     exclude_line_ids cut, using an already-loaded context
-    (scripts.run_virginia_gic.load_gic_context()). Returns the resulting
-    ground-GIC dataframe (Substation + GIC_<period> columns, all twelve
-    periods).
+    (run_virginia_gic.load_gic_context()). Returns the ground-GIC
+    dataframe (Substation + GIC_<period> columns, all twelve periods).
 
-    Deletes any existing iteration-0 output in gic_dir/gnd_gic_dir before
-    solving: run_monte_carlo() skips re-solving an iteration whose output
-    files already exist (the right behavior for resuming an interrupted
-    Monte Carlo run), but that's wrong here -- gic_dir/gnd_gic_dir is
-    reused across many different exclude_line_ids during a search, and a
-    stale ground_gic0.csv from a DIFFERENT candidate would otherwise be
-    silently reused instead of solved fresh.
+    Deletes any existing iteration-0 output first: run_monte_carlo() skips
+    re-solving if output already exists (right for resuming an
+    interrupted run, wrong here since gic_dir/gnd_gic_dir gets reused
+    across many different exclude_line_ids during a search).
 
-    Imports run_virginia_gic lazily to avoid a circular import
-    (select_island_by_redistribution_sensitivity.py -> this module ->
-    run_virginia_gic, while run_virginia_islanded_gic.py already imports
-    run_virginia_gic directly)."""
+    Imports run_virginia_gic lazily to avoid a circular import."""
     from scripts.run_virginia_gic import run_monte_carlo
 
     gnd_out_path = gnd_gic_dir / "ground_gic0.csv"
@@ -97,16 +70,12 @@ def solve_single_iteration(ctx: dict, exclude_line_ids: set, gic_dir, gnd_gic_di
 
 def ensure_baseline_single_iteration(ctx: dict) -> pd.DataFrame:
     """Iteration 0 of the unmodified-topology baseline, reused by every
-    caller that needs one (validate_island_directionality.py's one-off
-    check; select_island_by_redistribution_sensitivity.py's search, once
-    per search run, reusing the same ctx as every candidate evaluation).
-    Reuses VA_GND_GIC_DIR/ground_gic0.csv if the full baseline Monte
-    Carlo already produced it -- iteration 0 of a completed run is
-    identical to a fresh single-iteration run (same seed_base+0 draw) --
-    otherwise runs just that one iteration. Unlike solve_single_iteration
-    above, deliberately does NOT delete/overwrite: this is the one
-    unmodified-topology case, so a pre-existing file here is always
-    correct to reuse, never stale."""
+    caller that needs one. Reuses VA_GND_GIC_DIR/ground_gic0.csv if the
+    full baseline Monte Carlo already produced it (iteration 0 of a
+    completed run is identical to a fresh single-iteration run), else
+    runs just that one iteration. Unlike solve_single_iteration, does NOT
+    delete/overwrite -- this is the one case where an existing file is
+    always correct to reuse, never stale."""
     from scripts.run_virginia_gic import run_monte_carlo
     from configs.virginia_config import VA_GIC_DIR, VA_GND_GIC_DIR
 
@@ -124,19 +93,17 @@ def real_storm_redistribution(
 ) -> dict:
     """Per-storm own_effect / redistribution_cost_real -- the real-physics
     analogs of evaluate_cut()'s benefit/redistribution_cost, using |GIC|
-    change (magnitude drives transformer fragility, not direction) summed
-    over the island's own members (own_effect) or the rest of the network
+    change (magnitude drives fragility, not direction) summed over the
+    island's members (own_effect) or the rest of the network
     (redistribution_cost_real), risk-weighted the same way the topology
     proxy was. Same math as validate_island_directionality.py's
-    compare_real_storms -- kept here as the one shared implementation
-    both that post-hoc filter and the in-loop search scorer use."""
+    compare_real_storms, shared here between both callers."""
     merged = baseline_df.merge(candidate_df, on="Substation", how="inner", suffixes=("_before", "_after"))
     dropped = (len(baseline_df) - len(merged), len(candidate_df) - len(merged))
     if dropped != (0, 0):
         logger.warning(
             f"Inner join on Substation dropped {dropped[0]} baseline / {dropped[1]} candidate rows "
-            "(likely nodes isolated by the boundary cut, or by keep_nodes_with_ground's non-zero-row "
-            "filtering) -- excluded from both own_effect and redistribution_cost_real below."
+            "(likely isolated by the cut, or by keep_nodes_with_ground filtering) -- excluded below."
         )
 
     is_member = merged["Substation"].isin(members)
@@ -161,14 +128,12 @@ def load_fragility_exposure() -> pd.DataFrame:
     """va_substation_exposure.gpkg (POP20 + the ten GDP_*/EST_* sector
     columns per substation, built by run_virginia_areal_interpolation.py)
     -- the same table run_virginia_fragility.py feeds into the real
-    fragility Monte Carlo. Loaded once per search run (like
-    run_virginia_gic.load_gic_context()), not per candidate.
+    fragility Monte Carlo. Loaded once per search run, not per candidate.
 
-    Restricted to Virginia by construction (this exposure table only has
-    rows for Virginia's substations) -- fragility_weighted_redistribution
-    below therefore only scores substations with real economic exposure,
-    which is a closer match to the actual econ objective (whole-VIRGINIA
-    $/day) than real_storm_redistribution's PJM-wide raw-|GIC| sum was."""
+    Virginia-only by construction, so fragility_weighted_redistribution
+    below only scores substations with real economic exposure -- closer
+    to the actual whole-VA $/day objective than real_storm_redistribution's
+    PJM-wide raw-|GIC| sum."""
     import geopandas as gpd
     from configs.virginia_config import VA_ECON_DIR
 
@@ -180,39 +145,29 @@ def load_fragility_exposure() -> pd.DataFrame:
     return exposure
 
 
-# Deliberately much smaller than the real fragility Monte Carlo's defaults
-# (DEFAULT_MAX_ITERATIONS=20000, DEFAULT_BATCH_SIZE=2000, with early-stop
-# convergence checking from draw 5000) -- this needs to run twice per real
-# storm per candidate (before/after), on top of the admittance solve
-# that's already the dominant cost, so it deliberately trades precision
-# for speed. Default `draws` value; both max_iter and batch are set equal
-# to whatever `draws` a caller passes, so _simulate_scenario's while loop
-# runs exactly one batch and returns -- its convergence check only
-# triggers at i>=5000, never reached as long as `draws` stays below that,
-# so `tol` stays inert. Callers needing less Monte Carlo noise (e.g. the
-# Phase 6i hard real-storm filter in select_island_by_redistribution_
-# sensitivity.py) can pass a higher `draws`, but should keep it under
-# 5000 to preserve this one-batch-and-return property.
+# Much smaller than the real fragility Monte Carlo's defaults (20000
+# iterations, 2000 batch, early-stop checking from draw 5000) -- trades
+# precision for speed since this runs twice per storm per candidate.
+# max_iter/batch both get set to `draws`, so _simulate_scenario does
+# exactly one batch and returns; keep draws under 5000 so its convergence
+# check (which starts at i>=5000) never kicks in and `tol` stays inert.
+# Callers needing less noise (e.g. Phase 6i's hard filter) can raise
+# `draws`, but should stay under 5000.
 CHEAP_FRAGILITY_DRAWS = 300
 
 
 def fragility_weighted_per_substation(
     gic_by_sub: pd.Series, exposure: pd.DataFrame, draws: int = CHEAP_FRAGILITY_DRAWS,
 ) -> pd.DataFrame:
-    """Runs econ/preprocess/p_gic_files.py's OWN fragility function
-    (_simulate_scenario/one_draw_vec -- the exact lognormal Pf = Phi((ln
-    Cpen + ln|GIC| - ln theta)/beta) model the real econ pipeline uses,
-    reused directly rather than reimplemented, so this proxy can't drift
-    out of sync with the real model) at a small draw count, and returns
-    each substation's per-substation failure_prob times its total GDP
-    exposure (summed across all ten GDP_* sectors) -- an "expected $
-    GDP-affected" scalar per substation, cheap enough to call inside a
-    search loop.
+    """Runs p_gic_files.py's own fragility function (_simulate_scenario,
+    the real econ pipeline's lognormal Pf model) at a small draw count,
+    reused directly rather than reimplemented so this can't drift out of
+    sync with the real model. Returns each substation's failure_prob
+    times its total GDP exposure (summed across the ten GDP_* sectors) --
+    an "expected $ GDP-affected" scalar, cheap enough for a search loop.
 
-    gic_by_sub: Series of raw GIC values (any sign; magnitude is what
-    matters, same as the real model) indexed by sub_id -- whatever the
-    index is actually named (e.g. "Substation" after a set_index() on the
-    ground-GIC dataframe), not necessarily "sub_id" itself."""
+    gic_by_sub: Series of raw GIC values indexed by sub_id (whatever the
+    index is actually named, e.g. "Substation")."""
     import econ.preprocess.p_gic_files as pgf
     from configs import GDP_COLUMNS, get_simulation_config
 
@@ -241,23 +196,16 @@ def fragility_weighted_redistribution(
     storms: list = REAL_HISTORICAL_STORMS, draws: int = CHEAP_FRAGILITY_DRAWS,
 ) -> dict:
     """Fragility-weighted analog of real_storm_redistribution() above --
-    same own_effect/redistribution_cost_real shape, but instead of a raw
-    risk-weighted |GIC| delta, each substation's contribution is its
-    fragility-model expected-GDP-affected delta (fragility_weighted_per_
-    substation, before vs. after the cut). This closes the proxy-
-    objective gap real_storm_redistribution has: raw |GIC| agreement
-    doesn't guarantee agreement in the actual fragility-priced $/day
-    outcome (Island H's Halloween result -- favorable raw-|GIC| sign,
-    negative real $/day -- is the demonstrated case motivating this).
+    same own_effect/redistribution_cost_real shape, but each substation's
+    contribution is its fragility-model expected-GDP-affected delta
+    instead of a raw |GIC| delta. Closes a real gap: raw |GIC| agreement
+    doesn't guarantee the actual fragility-priced $/day outcome agrees
+    (Island H's Halloween result had a favorable |GIC| sign but a
+    negative real $/day, which motivated this).
 
-    Two fragility-model calls per storm (before, after) rather than one
-    real_storm_redistribution-style comparison -- each cheap (`draws`,
-    default CHEAP_FRAGILITY_DRAWS) relative to the admittance solve that
-    produced baseline_df/candidate_df in the first place. select_island_
-    by_redistribution_sensitivity.py's Phase 6i hard real-storm filter
-    passes a higher `draws` than the default to tighten this
-    approximation's Monte Carlo noise, since that filter's whole purpose
-    is to be trustworthy enough to hard-reject candidates on."""
+    Phase 6i's hard real-storm filter passes a higher `draws` than the
+    default to tighten Monte Carlo noise, since it needs to be trustworthy
+    enough to hard-reject candidates on."""
     per_storm = {}
     for period in storms:
         before_col, after_col = f"GIC_{period}", f"GIC_{period}"
@@ -281,11 +229,9 @@ def fragility_weighted_redistribution(
 
 
 def worst_case_redistribution_cost(per_storm: dict) -> float:
-    """max over the real storms' redistribution_cost_real -- see module
-    docstring's WORST-CASE, NOT AVERAGE. 0.0 if per_storm is empty (no
-    real-storm columns present -- shouldn't happen against real data, but
-    scoring as "no worse than baseline" rather than crashing is the right
-    failure mode for a search loop)."""
+    """max over the real storms' redistribution_cost_real (see module
+    docstring). 0.0 if per_storm is empty -- shouldn't happen against real
+    data, but scoring as "no worse than baseline" beats crashing."""
     if not per_storm:
         return 0.0
     return max(v["redistribution_cost_real"] for v in per_storm.values())

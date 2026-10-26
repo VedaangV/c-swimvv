@@ -1,40 +1,12 @@
 """
-Visualization of the VA+PJM EHV network, and the source for the paper's
-Figure 3.
+Visualization of the VA+PJM EHV network; source for the paper's Figure 3.
 
-DELIBERATELY DOES NOT READ scripts/build_virginia_network.py's own output
-(va_pjm_lines.geojson / va_pjm_substations.geojson) ANY MORE. Those two
-files are overwritten unconditionally on every run of that script (only
-its raw-OSM-download cache is checked before re-fetching), so they can
-silently drift out of sync with the network actually in use everywhere
-else -- confirmed against real data: a re-run of build_virginia_network.py
-produced 2,226 substations / 3,880 lines, while va_network_graph.pkl /
-va_topology_metrics.csv (built earlier by build_virginia_network_graph.py,
-and what every other script -- centrality, islanding, GIC -- actually
-reads) reflect 2,624 substations / 4,586 lines, matching the paper's
-already-published 2,728/4,587. Reading transmission_lines.csv and
-va_topology_metrics.csv here instead -- the exact same two files
-viz/plot_island_maps.py already reads for the same reason -- means this
-figure is always consistent with the real pipeline output, regardless of
-whether build_virginia_network.py's own snapshot ever drifts again.
-
-Three fixes applied per paper review feedback (Ed's Oct 2026 review):
-- Filled PJM-state polygons as an actual basemap layer (zorder=1, light
-  fill), not just thin boundary outlines over blank white -- the previous
-  version had state borders but no sense of land vs. not-land.
-- Added a "Location in the PJM footprint" inset locator, same technique
-  viz/plot_island_maps.py already uses: build the main axes first, force a
-  draw, then position the inset against the main axes' ACTUAL post-aspect
-  rendered box (ax.get_position()) rather than a pre-guessed rect, so it
-  sits snug regardless of how tall/wide the PJM footprint's own aspect
-  ratio turns out to be. The inset sits INSIDE the main map's own box, in
-  its top-right corner, rather than beside it in a separate reserved
-  column -- a white backing patch behind it keeps it legible over
-  whatever map content (lines, states) happens to fall underneath.
-- Substations are now in the legend (previous version's subs.plot() call
-  had no label=, so matplotlib silently excluded it from ax.legend()) and
-  smaller/lighter so they read as context rather than competing visually
-  with the colored transmission lines.
+Deliberately does NOT read build_virginia_network.py's own output
+(va_pjm_lines/substations.geojson) -- that script overwrites those files
+unconditionally on every run and they can drift out of sync with what
+every other script (centrality, islanding, GIC) actually reads. Instead
+this reads transmission_lines.csv and va_topology_metrics.csv, same as
+viz/plot_island_maps.py, so it stays consistent with the real pipeline.
 
 Usage:
     python viz/plot_virginia_network.py
@@ -85,15 +57,10 @@ def main():
     lines = lines.rename(columns={"V": "VOLTAGE"})
 
     fig = plt.figure(figsize=(12, 9))
-    # Main axes now claims the full figure width -- the inset is placed
-    # inside this box (top-right corner, see below) instead of beside it,
-    # so there's no need to reserve a separate column for it any more.
+    # inset is placed inside this box (top-right), so no separate column needed
     ax = fig.add_axes([0.08, 0.08, 0.88, 0.86])
 
     pjm_states = get_pjm_geodataframe()
-    # Basemap layer: filled state polygons, not just boundary outlines --
-    # gives the figure an actual land/not-land reference instead of thin
-    # lines over blank white.
     pjm_states.plot(ax=ax, color="#f5f5f0", edgecolor="0.6", linewidth=0.6, zorder=1)
 
     va_boundary = get_virginia_boundary()
@@ -111,10 +78,7 @@ def main():
     ax.set_title(f"VA+PJM EHV network — {len(lines)} lines, {len(subs)} substations")
     ax.set_xlabel("Longitude")
     ax.set_ylabel("Latitude")
-    # Equirectangular correction (1/cos(latitude)) -- same convention as
-    # every other Virginia-local map in this project (viz/plot_island_maps.py,
-    # viz/plot_virginia_gic_risk.py) -- plain 1:1 aspect visibly stretches
-    # the network east-west at this latitude.
+    # equirectangular correction, same as other Virginia-local maps in this project
     _, miny, _, maxy = pjm_states.total_bounds
     mean_lat = (miny + maxy) / 2
     ax.set_aspect(1.0 / max(np.cos(np.radians(mean_lat)), 1e-6))
@@ -122,25 +86,19 @@ def main():
     line_handles, line_labels = ax.get_legend_handles_labels()
     ax.legend(handles=line_handles, labels=line_labels, loc="lower left", fontsize=8, title="Line voltage")
 
-    # Locator inset: PJM footprint outline with Virginia highlighted, now
-    # positioned INSIDE the main axes' own box (top-right corner) instead
-    # of beside it -- still anchored against the main axes' ACTUAL
-    # rendered box (post-draw), not a pre-guessed rect, same reasoning as
-    # viz/plot_island_maps.py's identical pattern.
+    # Locator inset: PJM footprint with Virginia highlighted, positioned
+    # against the main axes' actual post-draw box (same approach as
+    # viz/plot_island_maps.py) so it sits snug in the top-right corner.
     fig.canvas.draw()
     main_pos = ax.get_position()
     inset_width, inset_height = 0.20, 0.24
     inset_pad = 0.012
-    inset_title_h = 0.035  # headroom for the inset's own title, below, not above, the main axes' top edge
+    inset_title_h = 0.035  # headroom for inset's title
     inset_x0 = main_pos.x1 - inset_width - inset_pad
     inset_y0 = main_pos.y1 - inset_height - inset_pad - inset_title_h
     inset_ax = fig.add_axes([inset_x0, inset_y0, inset_width, inset_height], zorder=10)
 
-    # A white backing patch (slightly larger than the inset's own box,
-    # including room for its title above) keeps the inset legible over
-    # whatever map content -- lines, state fills -- falls underneath it.
-    # Sized to stay entirely within the main axes' top edge (main_pos.y1),
-    # so it never overlaps the main title that sits above that edge.
+    # white backing so the inset stays legible over the map content beneath it
     backing_pad = 0.008
     fig.patches.append(
         plt.Rectangle(

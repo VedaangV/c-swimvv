@@ -1,8 +1,7 @@
 """
-One-off diagnostic: print the actual structure of the existing
-socioeconomic_data.pkl so scripts/extract_virginia_results.py's
-filter_socioeconomic_data() can be fixed to match reality instead of a
-guess based on reading econ/preprocess/p_econ_data.py's source.
+One-off diagnostic: prints the actual structure of socioeconomic_data.pkl so
+filter_socioeconomic_data() in extract_virginia_results.py can be fixed to
+match reality instead of guessing from p_econ_data.py's source.
 
 Usage: python scripts\\_inspect_socioeconomic_data.py
 """

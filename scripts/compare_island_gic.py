@@ -1,37 +1,23 @@
 """
-Diagnostic for Phase 5's surprising first result: the islanded-topology
-Ghosh economic-impact output shows *worse* whole-Virginia total impact than
-baseline in every scenario/confidence combination, not better (see
-ISLANDING_MITIGATION_PLAN.md). Before treating that as a real "islanding
-backfires" finding rather than a bug, this checks the more basic question:
-did cutting an island's boundary lines even reduce GIC *at that island's
-own members* -- the one thing the topology edit should unambiguously do,
-regardless of what happens to the rest of the network.
+Diagnostic for Phase 5's surprising result: the islanded-topology econ
+output showed worse whole-Virginia impact than baseline in every scenario.
+Before calling that a real finding rather than a bug, this checks the more
+basic thing: did cutting the island's boundary lines even reduce GIC at
+that island's own members?
 
-Compares mean/p95 |ground GIC| at an island's members only, baseline
-(VA_GND_GIC_DIR) vs islanded (that island's gnd_gic_dir), per storm
-scenario. Same "take the magnitude, not the signed value" reasoning as
-scripts/extract_virginia_results.py's summarize_ground_gic() -- ground
-GIC's sign depends on storm field direction, not on how large/damaging the
-current actually is, so averaging signed values could understate real
-magnitude.
+Compares mean/p95 |ground GIC| at an island's members, baseline
+(VA_GND_GIC_DIR) vs islanded (that island's gnd_gic_dir), per storm. Uses
+magnitude not signed value, same reasoning as summarize_ground_gic() in
+extract_virginia_results.py -- GIC sign is just storm field direction, not
+severity.
 
-Two possible outcomes, both informative:
-- The island's own GIC drops in the islanded run (local protection
-  worked), but the aggregate econ result is still worse -> supports the
-  network-wide redistribution explanation (cutting the boundary rerouted
-  more current onto other paths elsewhere in Virginia than it removed
-  locally) -- a real, reportable finding, not a bug.
-- The island's own GIC does NOT drop (flat or worse even locally) ->
-  points at something wrong upstream (the cut, the connectivity check, or
-  the Monte Carlo itself), worth debugging before trusting either result.
+If local GIC drops but the aggregate econ result is still worse, that
+points to network-wide redistribution (a real finding). If local GIC
+doesn't drop either, something upstream (the cut, connectivity check, or
+Monte Carlo) is probably broken -- debug before trusting either result.
 
-Takes an island_id ("a", "b", ...; default "a") -- reads va_island_{id}.json
-and configs.virginia_config.get_island_dirs(island_id)'s gnd_gic_dir, same
-generalization as scripts/run_virginia_islanded_gic.py and friends.
-
-Run after both scripts/run_virginia_gic.py and scripts/run_virginia_
-islanded_gic.py (same island_id) have completed.
+Run after both run_virginia_gic.py and run_virginia_islanded_gic.py (same
+island_id) have completed.
 
 Usage:
     python scripts/compare_island_gic.py [--island b]
@@ -100,9 +86,8 @@ def summarize(df: pd.DataFrame, label: str) -> pd.DataFrame:
 
 def build_comparison(combined: pd.DataFrame, gic_cols: list, island_label: str) -> pd.DataFrame:
     """Reshape the wide baseline_GIC_{period}_{stat} / {island_label}_GIC_{period}_{stat}
-    summary into a long sub_id x period x stat table with diff/pct_change --
-    shared by this script and scripts/compare_virginia_gic.py (same summarize()
-    output shape, different substation scope)."""
+    summary into a long sub_id x period x stat table with diff/pct_change.
+    Shared with compare_virginia_gic.py (same summarize() output shape)."""
     rows = []
     for period in gic_cols:
         for stat in ("mean", "p95"):

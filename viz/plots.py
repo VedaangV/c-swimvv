@@ -247,19 +247,13 @@ def plot_socio_economic_impact(
 def plot_vuln_trafos(vuln_data, df_lines, file_suffix="", extent=None, projection=None):
     """Plot substations with failure probability controlling size and color.
 
-    Text/legend sizes tuned for print/research-paper legibility (panel
-    titles, legend labels/titles, and legend marker/line samples all
-    sized up from their original small-multiple-on-screen defaults) --
-    the legend markers and line-sample widths below are deliberately
-    LARGER than what's drawn on the maps themselves (map linewidths stay
-    physically meaningful/thin; a legend sample only needs to be visible
-    and distinguishable, not to scale).
+    Legend sizes are tuned for print, and deliberately larger than the
+    actual on-map line widths (legend samples just need to be visible,
+    not to scale).
 
-    extent/projection default to this function's original CONUS-wide
-    values (unchanged behavior for the national caller) -- pass a
-    tighter extent (e.g. a state's own bounding box) and a projection
-    centered on it for a regional version of this same figure, as
-    viz/plot_virginia_vulnerable_trafos.py does."""
+    extent/projection default to CONUS (unchanged national behavior);
+    pass a tighter extent + centered projection for a regional version,
+    as viz/plot_virginia_vulnerable_trafos.py does."""
     if projection is None:
         projection = ccrs.LambertConformal(central_longitude=-98, central_latitude=39.5)
 
@@ -399,10 +393,7 @@ def plot_vuln_trafos(vuln_data, df_lines, file_suffix="", extent=None, projectio
     )
     fig.add_artist(leg_prob)
 
-    # Legend line samples are drawn much thicker than voltage_width_map's
-    # actual on-map widths (those stay thin/physically meaningful on the
-    # map itself) -- a hairline 0.2-0.6pt sample would be all but
-    # invisible once the legend text/markers are sized up for print.
+    # legend line samples thicker than on-map widths, which are too thin to see at legend scale
     legend_voltage_widths = {v: w * 6 for v, w in voltage_width_map.items()}
     volt_handles = [
         Line2D(
@@ -1178,35 +1169,19 @@ def create_custom_colorbar_e_field(
     cb = plt.colorbar(obj, cax=cax, label=label, orientation="vertical")
     cb.ax.set_ylabel(title, rotation=90, labelpad=4, fontsize=8)
 
-    # Fixed reference ticks -- ALWAYS the same three values (1, 10, the
-    # GLOBAL vmax shared by every panel in the figure) on every panel,
-    # regardless of that panel's own peak. This is what makes the color
-    # scale visibly comparable across panels: an earlier revision instead
-    # substituted/dropped the shared vmax tick whenever a panel's own peak
-    # landed close to it (to avoid the two colliding), which fixed the
-    # overlap but made every panel's colorbar look independently scaled
-    # (different top number per row) even though the underlying color
-    # mapping (norm bounds) was identical all along -- exactly backwards
-    # for a multi-panel figure whose whole point is cross-panel comparison.
+    # Always the same three reference ticks (1, 10, global vmax) on every
+    # panel regardless of that panel's own peak -- keeps the color scale
+    # visibly comparable across panels instead of each one looking
+    # independently scaled.
     fixed_ticks = sorted({1, 10, vmax})
 
     def _fmt(x):
         return f"{x:.2e}" if x < 0.01 else f"{x:.0f}"
 
-    # Drop the "10" reference tick specifically when THIS panel's own peak
-    # would land too close to it to render both labels legibly -- 1 and
-    # vmax are always kept (they're the scale's anchors, and what actually
-    # makes cross-panel comparison possible); "10" is a helpful middle
-    # waypoint shown only when there's room. Needed for a real observed
-    # case: Virginia's real peaks cluster at 12-16 (all within one decade
-    # of vmax), unlike the wider spread the reference national data had,
-    # so current_max consistently landed within ~15% of "10" on this
-    # log-scaled bar -- close enough that horizontal offset alone (the
-    # current_max marker below) wasn't enough separation. This can make
-    # the exact tick SET differ slightly panel to panel (whichever ones
-    # happen to have a peak far enough from 10 keep it, others don't) --
-    # a minor, explainable trade-off against the alternative of two
-    # overlapping illegible labels.
+    # Drop "10" when this panel's own peak lands too close to it to render
+    # both labels legibly (1 and vmax are always kept as the scale's
+    # anchors). Virginia's real peaks cluster near 12-16, close enough to
+    # "10" on the log scale that they'd otherwise overlap it.
     if 10 in fixed_ticks and np.isfinite(current_max) and current_max > 0 and not np.isclose(current_max, 10):
         log_span = np.log10(vmax) - np.log10(1) if vmax > 1 else 1.0
         if abs(np.log10(current_max) - np.log10(10)) < max(0.15 * log_span, 0.10):
@@ -1215,22 +1190,12 @@ def create_custom_colorbar_e_field(
     cb.set_ticks(fixed_ticks)
     labels = [_fmt(t) for t in fixed_ticks]
 
-    # This panel's own real peak (current_max) is reported separately from
-    # the fixed ticks, so it never has to compete with one for space:
-    # - if it's (numerically, not just visually-close) EQUAL to the shared
-    #   vmax -- this panel is the one that actually sets the global max --
-    #   just mark that existing tick red/starred instead of drawing a
-    #   second annotation on top of it. Deliberately a tight equality
-    #   check, not a "close enough to maybe collide" one: an earlier
-    #   revision used a loose log-distance threshold here and would have
-    #   mislabeled a real peak of 14 as "16*" just because it was within
-    #   ~12% of a global vmax of ~16 -- wrong, not just imprecise, since
-    #   this branch substitutes the DISPLAYED value, not just its position.
-    # - otherwise, draw it as its own red line + label at the correct
-    #   height on the bar, independent of the fixed-tick positions -- safe
-    #   to do even when current_max sits close to vmax, since this label
-    #   is horizontally offset from the tick labels rather than sharing
-    #   their slot.
+    # This panel's own peak (current_max) is reported separately from the
+    # fixed ticks so it never competes with one for space: if it's exactly
+    # equal to the shared vmax, just mark that tick red/starred rather than
+    # draw a second annotation on top of it (a loose "close enough" check
+    # here would mislabel a real peak that just happens to be near vmax).
+    # Otherwise draw it as its own red line + label, offset from the tick labels.
     close_to_vmax = (
         np.isfinite(current_max) and current_max > 0 and vmax > 0
         and np.isclose(current_max, vmax)

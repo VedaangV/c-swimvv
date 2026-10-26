@@ -1,31 +1,16 @@
 """
-Write a per-island benefit-cost summary file into that island's own econ
-directory (data/virginia/econ/island_{id}/) -- pulled directly from
-already-saved pipeline output rather than transcribed by hand from chat
-history, which is unreliable and (for islands K/L/M) incomplete: the
-console log line with the own-outage/switching cost breakdown was never
-pasted back for those, only the per-scenario net_musd table. Both numbers
-are recoverable straight from disk without rerunning anything:
-- data/virginia/network/va_island_{id}.json (scripts/select_island_by_
-  redistribution_sensitivity.py's output -- members, boundary_line_count,
-  seed, and, for islands built by the current real-storm-scored search,
-  net_score/per_storm/worst_case_total_effect/passes_real_storm_filter)
-- data/virginia/econ/va_island_{id}_benefit_cost.csv (scripts/compute_
-  island_benefit_cost.py's own saved output -- per-scenario diff/benefit/
-  net_musd/benefit_cost_ratio for all three repair-duration variants,
-  plus total_cost_musd, constant across every row for a given island).
+Write a per-island benefit-cost summary (BENEFIT_COST_SUMMARY.md) into
+that island's own econ directory, pulled directly from already-saved
+pipeline output (va_island_{id}.json and va_island_{id}_benefit_cost.csv)
+rather than transcribed by hand.
 
-Newer va_island_{id}_benefit_cost.csv files (after compute_island_
-benefit_cost.py's stranded-substation-cost fix) save own_outage_cost_musd,
-switching_cost_musd, stranded_outage_cost_musd, and n_stranded_substations
-as explicit columns -- read directly when present. Older CSVs saved only
-the combined total_cost_musd, so this falls back to recomputing
-switching_cost_musd from boundary_line_count (compute_island_benefit_
-cost.py's own SWITCHING_COST_PER_LINE_USD constant, kept in sync manually)
-and back-solving own_outage_cost_musd as total_cost_musd -
-switching_cost_musd -- which, for those older runs, silently folds in
-whatever stranded cost existed at the time (none, since the fix didn't
-exist yet) rather than reporting it separately.
+Newer benefit_cost.csv files save own_outage_cost_musd/switching_cost_musd/
+stranded_outage_cost_musd/n_stranded_substations as explicit columns, read
+directly when present. Older CSVs only have the combined total_cost_musd,
+so this falls back to recomputing switching_cost_musd from
+boundary_line_count and back-solving own_outage_cost_musd -- which for
+those older runs silently folds in any stranded cost rather than
+reporting it separately (there wasn't any at the time anyway).
 
 Usage:
     python scripts/write_island_benefit_cost_summary.py --island g
@@ -73,11 +58,8 @@ def write_summary(island_id: str) -> bool:
         stranded_outage_cost_musd = float(df["stranded_outage_cost_musd"].iloc[0]) if "stranded_outage_cost_musd" in df.columns else 0.0
         n_stranded_substations = int(df["n_stranded_substations"].iloc[0]) if "n_stranded_substations" in df.columns else 0
     else:
-        # Older CSV, saved before the stranded-substation-cost fix: only
-        # total_cost_musd exists, so back-solve as before. Any stranded
-        # cost that existed at run time (there wasn't any -- the fix
-        # didn't exist yet) would already be folded silently into this
-        # own_outage_cost_musd rather than broken out.
+        # Older CSV (pre stranded-substation-cost fix): only total_cost_musd
+        # exists, so back-solve; any stranded cost is folded in silently.
         switching_cost_musd = boundary_line_count * SWITCHING_COST_PER_LINE_USD / 1e6
         own_outage_cost_musd = total_cost_musd - switching_cost_musd
         stranded_outage_cost_musd = 0.0

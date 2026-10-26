@@ -2,26 +2,13 @@
 Visualize Virginia substations ranked by Substation Criticality Index (SCI)
 from scripts/compute_virginia_criticality.py's output.
 
-Produces a two-panel figure, styled consistently with
-viz/plot_virginia_gic_risk.py:
-  left  — map of all ranked Virginia substations sized/colored by SCI, with
-          the VA+PJM network lines as geographic context and the top-
-          criticality substations labeled
-  right — horizontal bar chart of the top-N substations ranked by SCI
+Two-panel figure, styled like viz/plot_virginia_gic_risk.py: a map of all
+ranked substations sized/colored by SCI with the top ones labeled, and a
+bar chart of the top-N by SCI.
 
-va_substation_criticality.csv doesn't carry latitude/longitude --
-compute_sci()'s output is deliberately just sub_id + component scores, not
-a geometry file. Coordinates are merged in here from Phase 1's
-va_topology_metrics.csv by sub_id instead, rather than adding geometry
-columns compute_virginia_criticality.py doesn't otherwise need, or asking
-for a re-run of an already-validated computation just to get lat/lon along
-for the ride.
-
-Works whether va_substation_criticality.csv was computed with three terms
-(GIC risk, economic exposure, betweenness) or four (+ critical_load_i from
-Phase 2b) -- detected from whether critical_load_norm is present, and
-reflected in the map's title so the figure is honest about what it's
-actually showing.
+va_substation_criticality.csv has no lat/lon, so coordinates are merged in
+from va_topology_metrics.csv by sub_id. Handles both the 3-term and 4-term
+(with critical_load_norm) SCI variants, reflected in the map title.
 
 Usage:
     python viz/plot_virginia_criticality.py
@@ -50,30 +37,17 @@ TOP_N_BAR = 15
 
 
 def _load_substation_labels() -> dict:
-    """sub_id (SS_ID) -> a human-readable label.
+    """sub_id (SS_ID) -> a human-readable label. Duplicated from
+    viz/plot_virginia_gic_risk.py rather than imported (project convention
+    of keeping these small per-script).
 
-    Duplicated from viz/plot_virginia_gic_risk.py rather than imported,
-    matching this project's existing convention (see virginia_config.py's
-    TRAFO_WINDING_R comment) of keeping Virginia-side scripts independent
-    of each other rather than cross-importing small helpers.
+    Priority: (1) external name (HIFLD/Wikidata, if fetched); (2) OSM name
+    tag; (3) operator + voltage + coordinates; (4) "Unnamed" + coordinates.
+    External names are optional, so falling through is normal, not an error.
 
-    Priority: (1) a real name from an external source (scripts/fetch_
-    virginia_substation_names.py's optional va_substation_names.csv --
-    HIFLD's Electric Substations dataset and/or Wikidata, nearest-neighbor
-    matched to this project's own substations); (2) OSM's own name tag from
-    ss_df.pkl, where present; (3) operator + voltage + coordinates; (4)
-    "Unnamed" + coordinates. Each tier falls through gracefully to the next
-    -- external names in particular are optional (the fetch script may
-    never have been run, or a given substation may not have matched within
-    the snap tolerance), same "absence isn't an error" pattern used
-    throughout this pipeline's optional data sources.
-
-    Fallback labels (tiers 3-4) append the raw sub_id -- without it, two
-    distinct substations that share a voltage class and both lack an OSM
-    name tag produce visually near-identical labels (e.g. two different
-    "115000 substation (lat, lon)" bars), which reads as a duplicate/bug on
-    a chart even though the small-print coordinates do differ. A real name
-    (external or OSM) is assumed unique enough to stand alone.
+    Fallback labels (tiers 3-4) append the raw sub_id since two substations
+    with the same voltage class and no OSM name would otherwise get
+    identical-looking labels.
     """
     external_names = {}
     names_path = VA_NETWORK_DIR / "va_substation_names.csv"
@@ -121,8 +95,7 @@ def _load_substation_labels() -> dict:
 
 
 def _load_coordinates() -> pd.DataFrame:
-    """sub_id, latitude, longitude -- from Phase 1's va_topology_metrics.csv.
-    va_substation_criticality.csv doesn't carry geometry itself."""
+    """sub_id, latitude, longitude from va_topology_metrics.csv."""
     path = VA_NETWORK_DIR / "va_topology_metrics.csv"
     if not path.exists():
         raise FileNotFoundError(f"Missing {path}. Run scripts/build_virginia_network_graph.py first.")
@@ -149,8 +122,7 @@ def main():
     if missing_coords:
         logger.warning(
             f"{missing_coords} substations in {summary_path} have no matching "
-            "coordinates in va_topology_metrics.csv -- dropped from the map "
-            "(sub_id mismatch would be unexpected; investigate if this is nonzero)."
+            "coordinates in va_topology_metrics.csv -- dropped from the map."
         )
         summary = summary.dropna(subset=["latitude", "longitude"])
 

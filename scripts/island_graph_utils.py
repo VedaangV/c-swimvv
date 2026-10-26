@@ -1,17 +1,13 @@
 """
-Shared graph utilities for working with va_network_graph.pkl and
-island member/boundary sets -- loading the graph, computing the
-induced-cut boundary of a node set, voltage-weighted and conductance-
-weighted edge costs, JSON-safe serialization, and attaching real
-per-line conductance for current-flow-based analysis.
+Shared graph utilities for va_network_graph.pkl and island member/boundary
+sets: loading the graph, induced-cut boundary of a node set, voltage- and
+conductance-weighted edge costs, JSON-safe serialization, and attaching
+real per-line conductance for current-flow analysis.
 
-Extracted out of scripts/deprecated_sci_islanding/select_virginia_
-island.py and check_redistribution_proxy.py when the SCI-driven greedy
-islanding strategy was deprecated (see that folder's README.md). These
-functions are pure graph-structure utilities with no SCI dependency --
-any island-selection strategy, old or new, needs to load the graph,
-compute a boundary cut, and cost it, so they're kept active and shared
-rather than moving with the deprecated selection algorithm.
+Extracted from deprecated_sci_islanding/select_virginia_island.py and
+check_redistribution_proxy.py when that greedy islanding strategy was
+deprecated -- these are pure graph utilities any selection strategy needs,
+so they stayed active rather than moving with the deprecated code.
 
 Usage: import as a library, e.g.
     from scripts.island_graph_utils import load_graph, boundary_edges
@@ -27,10 +23,9 @@ logger = setup_logger(log_file="logs/island_graph_utils.log")
 
 
 def sanitize_for_json(obj):
-    """Recursively replace float('inf')/-inf with None. json.dump would
-    otherwise emit the bare (non-standard) token Infinity for a ratio of
-    inf -- valid to Python's own json.load, but not spec-compliant JSON,
-    so a different tool reading an island JSON file could choke on it."""
+    """Recursively replace float('inf')/-inf with None -- json.dump would
+    otherwise emit the non-spec-compliant Infinity token, which chokes
+    other tools reading these files."""
     if isinstance(obj, float) and (obj == float("inf") or obj == float("-inf")):
         return None
     if isinstance(obj, dict):
@@ -50,10 +45,9 @@ def load_graph() -> nx.Graph:
 
 
 def boundary_edges(G: nx.Graph, members: set) -> set:
-    """Induced cut of members against the rest of the graph -- every edge
-    with exactly one endpoint inside members. Recomputed fresh rather than
-    incrementally patched -- simple to get right, cheap at power-grid
-    scale (thousands of nodes, boundary sizes in the tens)."""
+    """Induced cut of members against the rest of the graph: every edge
+    with exactly one endpoint in members. Recomputed fresh each time --
+    cheap enough at this scale and simpler than patching incrementally."""
     boundary = set()
     for u in members:
         for v in G.neighbors(u):
@@ -64,11 +58,9 @@ def boundary_edges(G: nx.Graph, members: set) -> set:
 
 def edge_cost(G: nx.Graph, u: str, v: str) -> float:
     """Voltage-weighted cost (kV / 100), summed per physical parallel line
-    this graph edge represents -- cutting a 500kV line is a materially
-    bigger deal than cutting a 138kV line. Summed per PHYSICAL line, not
-    per graph edge -- build_virginia_network_graph.py aggregates parallel
-    circuits onto a single edge specifically so this cost accounting
-    reflects the real number of lines that would need to be switched."""
+    (cutting a 500kV line matters more than a 138kV one). Summed per
+    physical line, not per graph edge, since build_virginia_network_graph.py
+    aggregates parallel circuits onto one edge."""
     voltages = G.edges[u, v].get("voltages", [])
     return sum(v_kv / 100 for v_kv in voltages if v_kv is not None)
 
@@ -79,11 +71,9 @@ def total_boundary_cost(G: nx.Graph, boundary: set) -> float:
 
 def excluded_nodes_for(G: nx.Graph, island_ids: list) -> set:
     """Members + boundary neighbors of each prior island (by id, reading
-    va_island_{id}.json), so a new island can't overlap or sit immediately
-    adjacent to one already selected. Boundary neighbors (not just
-    members) are excluded because seeding right next to a prior island's
-    cut wouldn't be a structurally independent new island, just an
-    extension of the first one by another name."""
+    va_island_{id}.json), so a new island can't overlap or sit right next
+    to one already selected -- otherwise it'd just be an extension of the
+    first island, not a structurally independent one."""
     excluded = set()
     for island_id in island_ids:
         import json
@@ -101,10 +91,9 @@ def excluded_nodes_for(G: nx.Graph, island_ids: list) -> set:
 
 def attach_conductance(G: nx.Graph) -> nx.Graph:
     """Sum 1/R (parallel-resistor conductance) over each edge's line_ids,
-    using the real per-line resistances from transmission_lines.csv -- the
-    same physical quantity the real GIC solve (admittance-matrix pipeline)
-    uses, not the voltage-based cost proxy above (which weights cut cost,
-    not current flow)."""
+    from transmission_lines.csv's real per-line resistances -- the actual
+    physical quantity the GIC solve uses, not the voltage-based cost proxy
+    above."""
     lines = pd.read_csv(VA_ADMITTANCE_DIR / "transmission_lines.csv")
     lines["name"] = lines["name"].astype(str)
     r_lookup = dict(zip(lines["name"], lines["R"]))
@@ -119,10 +108,9 @@ def attach_conductance(G: nx.Graph) -> nx.Graph:
                 missing += 1
                 continue
             conductance += 1.0 / r
-        # A zero/near-zero conductance edge would make a Laplacian-based
-        # solve singular in a way it can't handle gracefully -- floor it
-        # instead of dropping the edge entirely (dropping could disconnect
-        # something that's supposed to still be connected).
+        # Floor instead of dropping zero-conductance edges -- dropping
+        # could disconnect something that should stay connected, and a
+        # zero edge would make a Laplacian solve singular anyway.
         data["conductance"] = conductance if conductance > 0 else 1e-9
     if missing:
         logger.warning(
@@ -133,10 +121,9 @@ def attach_conductance(G: nx.Graph) -> nx.Graph:
 
 
 def largest_component_subgraph(G: nx.Graph, exclude: set | None = None) -> nx.Graph:
-    """Some analyses (e.g. current_flow_betweenness_centrality) require a
-    connected graph -- restrict to the largest connected component after
-    optionally removing a node set (an island's members, once its
-    boundary is cut, which makes them their own separate component)."""
+    """Some analyses (e.g. current_flow_betweenness_centrality) need a
+    connected graph -- restrict to the largest component, optionally
+    after removing a node set (e.g. an island once its boundary is cut)."""
     exclude = exclude or set()
     H = G.copy()
     H.remove_nodes_from(exclude)

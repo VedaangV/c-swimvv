@@ -1,35 +1,12 @@
 """
 Build the Virginia+PJM admittance matrix inputs.
 
-Reuses scripts/build_admittance_matrix.py's process_substation_buses() and
-get_transformer_samples() completely unmodified, pointed at
-configs.virginia_config.VA_DATA_DIR instead of the US data/ directory.
-
-Two adaptations were necessary and are called out explicitly here rather
-than done silently:
-
-1. build_admittance_matrix.load_and_process_data() unconditionally reads
-   `<DATA_LOC>/grid_mapping.csv` — a hand-annotated table of per-substation
-   transformer roles that, on the reference machine, was produced by manual
-   GIS review, not by any script in this repo. It is only actually consumed
-   when process_substation_buses(..., evan_data=True) is used (the
-   alternate "Evan's verified data" transformer path); the default
-   evan_data=False path this script uses (build_substation_buses(), a
-   synthetic/Monte-Carlo transformer-type estimate) never reads the
-   parsed values. Since Virginia has no such manual annotation, this script
-   writes an empty-but-valid stub grid_mapping.csv so the loader doesn't
-   crash, and documents that the values are unused for our path.
-
-2. get_transformer_samples() writes its output to `<module-level DATA_LOC>
-   / sample_network.pkl` — a module global, not a function parameter — so
-   it has to be monkeypatched to VA_DATA_DIR before calling, exactly as the
-   original adaptation plan anticipated for functions that "don't accept
-   arguments" for their data location.
-
-Run after scripts/build_virginia_network.py and
-scripts/recompute_virginia_line_voltages.py (which together populate
-VA_DATA_DIR/grid_processed/ with all six files load_and_process_data()
-expects).
+Reuses build_admittance_matrix.py's process_substation_buses() and
+get_transformer_samples() unmodified, pointed at VA_DATA_DIR instead of the
+US data/ directory. Writes a stub grid_mapping.csv since Virginia has no
+manual transformer-role annotation (unused on the synthetic-sampling path
+we use here anyway). Run after scripts/build_virginia_network.py and
+scripts/recompute_virginia_line_voltages.py.
 """
 
 import pandas as pd
@@ -62,10 +39,8 @@ def _check_inputs():
 
 
 def _write_grid_mapping_stub():
-    """See module docstring point 1: an empty, schema-valid grid_mapping.csv
-    so load_and_process_data() can load it without erroring, given Virginia
-    has no manual transformer-role annotation and doesn't need one for the
-    evan_data=False (synthetic transformer sampling) code path used here."""
+    """Empty, schema-valid grid_mapping.csv so load_and_process_data()
+    doesn't error -- Virginia has no manual transformer-role annotation."""
     path = VA_DATA_DIR / "grid_mapping.csv"
     if path.exists():
         return
@@ -77,8 +52,7 @@ def main():
     _check_inputs()
     _write_grid_mapping_stub()
 
-    # get_transformer_samples() reads a module-level DATA_LOC, not a
-    # parameter — redirect it to Virginia's output tree.
+    # get_transformer_samples() reads DATA_LOC as a module global, not a param
     bam.DATA_LOC = VA_DATA_DIR
 
     logger.info(f"Building VA+PJM substation buses from {VA_DATA_DIR}...")

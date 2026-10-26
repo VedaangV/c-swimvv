@@ -1,42 +1,19 @@
 """
 Virginia-scoped version of viz/plots.py's plot_vuln_trafos() -- substation
 transformer failure-probability maps (100/150/200/250-year storms), sized
-and colored by mean failure probability, with transmission lines colored
-by voltage class.
+and colored by mean failure probability, with lines colored by voltage.
 
-Reuses plot_vuln_trafos() completely unmodified apart from two parameters
-that function now accepts specifically so a regional caller doesn't need
-to duplicate its ~180-line plotting loop: `extent` (this script passes
-Virginia's own bounding box instead of the function's CONUS default) and
-`projection` (a LambertConformal centered on Virginia instead of the
-national center, same center used by viz/plot_virginia_hazard_maps.py).
-FIGURES_DIR is monkeypatched to VA_FIGURES_DIR the same way viz/plot_
-virginia_hazard_maps.py monkeypatches vplots.line_coordinates -- that
-function reads FIGURES_DIR as a module global on viz.plots, not a
-parameter, and this is a standalone script process so there's no need to
-restore it afterward.
+Reuses plot_vuln_trafos() unmodified, passing Virginia's own extent/
+projection instead of the CONUS defaults. FIGURES_DIR is monkeypatched to
+VA_FIGURES_DIR since that function reads it as a module global, not a
+parameter.
 
-Two Virginia-specific inputs, each reimplemented rather than editing
-shared code in place (this project's established convention):
-1. Transmission line geometry + voltage class -- reuses viz/plot_
-   virginia_hazard_maps.py's load_va_network_lines() unmodified (reads
-   data/virginia/admittance_matrix/transmission_lines.csv, which already
-   has the same "V" voltage-class column plot_vuln_trafos() expects,
-   built by the same scripts/build_admittance_matrix.py logic as the
-   national table).
-2. Per-substation mean failure probability -- scripts/run_virginia_
-   fragility.py's output (va_vulnerable_substations_gnd_gic, a parquet
-   dataset partitioned by scenario) is per-realization; econ/scripts/
-   l_prepr_data.py's process_vulnerability_chunks() (the exact function
-   the national pipeline uses for the same reduction) collapses it to
-   the sub_id/scenario/mean_failure_prob/latitude/longitude shape
-   plot_vuln_trafos() expects -- reused unmodified here too.
+Line geometry comes from plot_virginia_hazard_maps.load_va_network_lines();
+vulnerability data is reduced from run_virginia_fragility.py's per-
+realization parquet output via econ/scripts/l_prepr_data.py's
+process_vulnerability_chunks() (same function the national pipeline uses).
 
-Run after scripts/run_virginia_fragility.py. Untested against real data
-in this session (no torch/cartopy environment here) -- report back
-exactly what happens on first run, including how far it gets before any
-error, same caution every other real-data Virginia script in this
-project has needed on first run.
+Run after scripts/run_virginia_fragility.py.
 
 Usage:
     python viz/plot_virginia_vulnerable_trafos.py
@@ -57,9 +34,9 @@ VULN_DATA_PATH = VA_ECON_DIR / "va_vulnerable_substations_gnd_gic"
 
 
 def load_virginia_vulnerability_data() -> pd.DataFrame:
-    """Reads the per-realization parquet dataset scripts/run_virginia_
-    fragility.py wrote, then reduces it with the same process_vulnerability_
-    chunks() the national pipeline uses -- see module docstring point 2."""
+    """Reads the per-realization parquet dataset from run_virginia_fragility.py
+    and reduces it with the same process_vulnerability_chunks() the national
+    pipeline uses."""
     if not VULN_DATA_PATH.exists():
         raise FileNotFoundError(
             f"Missing {VULN_DATA_PATH}. Run scripts/run_virginia_fragility.py first."
@@ -88,8 +65,7 @@ def main():
     va_extent = [minx - pad, maxx + pad, miny - pad, maxy + pad]
     va_projection = ccrs.LambertConformal(central_longitude=-78.5, central_latitude=37.5)
 
-    # plot_vuln_trafos() reads this as a module global on viz.plots, not a
-    # parameter -- see module docstring.
+    # plot_vuln_trafos() reads this as a module global, not a parameter
     vplots.FIGURES_DIR = VA_FIGURES_DIR
 
     vplots.plot_vuln_trafos(

@@ -1,32 +1,17 @@
 """
-EIA-860 generation-capacity matching for Virginia substations.
+EIA-860 generation-capacity matching for Virginia substations -- checks
+whether a substation (or island) has real nearby generation, inspired by
+how NZ's Scenario 5 (arXiv:2507.12495) anchors its island on Manapouri
+hydro so the protected load stays served locally regardless of the wider
+grid.
 
-Originally a bonus post-hoc check for Island A ("does it happen to have
-generation capacity" -- not required for the core protective-islanding
-methodology, which models islanding as a temporary planned disconnection,
-not a requirement to stay powered). Reading the actual NZ precedent paper
-(arXiv:2507.12495) changed that: its own strongest scenario (Scenario 5)
-isn't a generic protective cut -- it's a deliberately engineered island
-anchored on Manapouri, a real hydro generation site, reconfigured so that
-generation directly supplies the protected load (the Tiwai Point smelter)
-regardless of what the wider grid is doing. That's a materially different,
-and evidently more effective, kind of islanding than "cut boundary lines
-around a high-risk node and hope for the best."
-
-compute_generation_by_substation() (added for this) generalizes
-match_generation_to_island() to the whole eligible substation set, not
-just one already-selected island -- used by scripts/select_virginia_
-island.py's require_local_generation option to anchor SEED selection on
-substations with real nearby generation, the same way Manapouri anchored
-Scenario 5, rather than checking for generation only after an island is
-already finalized.
+compute_generation_by_substation() generalizes match_generation_to_island()
+to any set of substations, not just an already-selected island, so
+select_virginia_island.py's require_local_generation option can anchor
+SEED selection on substations with real nearby generation.
 
 MUST BE RUN ON A MACHINE WITH NORMAL INTERNET ACCESS to download EIA-860
-first -- this script itself only reads local files, no live fetch, since
-EIA's exact current-year download URL couldn't be verified from this
-sandbox (unlike the ArcGIS services elsewhere in this project, EIA-860 is
-a well-established, stable government survey, but the file naming is
-versioned by year and best downloaded by hand rather than guessed blind).
+first -- this script itself only reads local files already on disk.
 
 SETUP (one-time):
 1. Go to https://www.eia.gov/electricity/data/eia860/ and download the most
@@ -37,15 +22,14 @@ SETUP (one-time):
    status) and a plant file matching "*Plant*.xlsx" (plant-level lat/lon)
    inside that folder, so exact year-versioned filenames don't matter.
 
-EIA-860 files are known to have a title row above the real header (real
-column headers usually start on the second row) and slightly inconsistent
-column-name spacing/capitalization across years -- handled defensively
-below (tries header=0 then header=1, matches key columns case/whitespace-
-insensitively) rather than assuming one exact layout.
+EIA-860 files have a title row above the real header and slightly
+inconsistent column-name spacing/capitalization across years, so column
+matching below is done defensively (tries several header rows, matches
+column names case/whitespace-insensitively).
 
 Matched to Island A's members by nearest plant location within
-SNAP_DISTANCE_M, same tolerance and reasoning as scripts/fetch_virginia_
-substation_names.py's HIFLD/Wikidata matching.
+SNAP_DISTANCE_M, same as scripts/fetch_virginia_substation_names.py's
+HIFLD/Wikidata matching.
 
 Usage:
     python scripts/check_island_generation.py
@@ -81,13 +65,9 @@ def _find_col(columns, candidates) -> str | None:
 
 
 def _read_with_header_detection(path, required_candidates) -> pd.DataFrame:
-    """EIA-860 sheets commonly have explanatory/title text above the real
-    header -- final-release years usually need header=1, but early-release
-    years (e.g. the "2025 Early Release" caveat text) push it further down.
-    Try header=0..3 and fall back to whichever produced the most columns
-    (a real header row parses into many named columns; a title-row misread
-    produces mostly 'Unnamed: N') if none matched the required candidates,
-    rather than silently returning garbage."""
+    """EIA-860 sheets have explanatory/title text above the real header,
+    and how far down varies by release. Try header=0..3 and use whichever
+    row actually matches the columns we need instead of guessing."""
     attempts = {}
     for header_row in range(4):
         df = pd.read_excel(path, header=header_row)
@@ -161,8 +141,7 @@ def match_generation_to_island(island_members: list, member_coords: pd.DataFrame
     """member_coords: sub_id, latitude, longitude for Island A's members
     (from va_topology_metrics.csv). Returns total matched capacity_mw and
     the list of matched generators, or zero/empty if EIA-860 hasn't been
-    downloaded -- this check is optional, its absence is never an error
-    for anything else in this pipeline."""
+    downloaded -- this check is optional and never required elsewhere."""
     if not RAW_EIA860_DIR.exists() or not any(RAW_EIA860_DIR.iterdir()):
         logger.info(
             f"{RAW_EIA860_DIR} not found or empty -- skipping generation check. "
@@ -203,17 +182,10 @@ def match_generation_to_island(island_members: list, member_coords: pd.DataFrame
 
 
 def compute_generation_by_substation(sub_coords: pd.DataFrame) -> dict:
-    """sub_coords: sub_id, latitude, longitude for any set of substations
-    (not just an already-selected island -- typically every eligible
-    substation from va_topology_metrics.csv). Returns {sub_id: capacity_mw}
-    for substations with matched EIA-860 generation within
-    SNAP_DISTANCE_M; substations with none are simply absent from the
-    dict (not zero-valued entries), so callers should use .get(sub_id, 0.0).
-
-    Reuses match_generation_to_island() unmodified -- that function only
-    cares about the coordinates it's given, not whether they represent a
-    finalized island or the full candidate pool, so no separate matching
-    logic is needed here."""
+    """sub_coords: sub_id, latitude, longitude for any set of substations.
+    Returns {sub_id: capacity_mw} for substations with matched EIA-860
+    generation within SNAP_DISTANCE_M; substations with none are simply
+    absent (not zero-valued), so callers should use .get(sub_id, 0.0)."""
     result = match_generation_to_island(list(sub_coords["sub_id"]), sub_coords)
     if not result["checked"]:
         return {}
