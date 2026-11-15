@@ -41,7 +41,6 @@ SUBTITLE_FONTSIZE = 13
 AXIS_LABEL_FONTSIZE = 15
 TICK_LABEL_FONTSIZE = 14
 LEGEND_FONTSIZE = 13
-BAR_LABEL_FONTSIZE = 9
 
 SCENARIO_ORDER = [
     "50-year", "75-year", "100-year", "125-year", "150-year", "175-year",
@@ -96,20 +95,14 @@ def main(island_ids=("a", "g", "o"), variant: str = "mid_365d"):
         sub = all_df[all_df["paper_label"] == label].set_index("scenario")
         y = y_base - 0.4 + bar_height * (j + 0.5)
         values = [sub.loc[s, "net_musd"] if s in sub.index else np.nan for s in present_scenarios]
-        bars = ax.barh(
+        ax.barh(
             y, values, height=bar_height * 0.9, color=ISLAND_COLORS.get(label, "0.5"),
             edgecolor="black", linewidth=1.0, label=f"Island {label}", zorder=3,
-        )
-        bar_labels = [f"{v:,.0f}" if np.isfinite(v) else "" for v in values]
-        ax.bar_label(
-            bars, labels=bar_labels, padding=3, fontsize=BAR_LABEL_FONTSIZE,
-            fontweight="bold", zorder=4,
         )
         # cost is fixed per island across scenarios, so one value is enough
         cost_by_label[label] = sub["total_cost_musd"].iloc[0]
 
     ax.axvline(0, color="0.3", linewidth=0.8, zorder=2)
-    ax.margins(x=0.1)  # room for the bar-end value labels so they don't clip at the plot edge
     ax.set_yticks(y_base)
     ax.set_yticklabels([SCENARIO_DISPLAY.get(s, s) for s in present_scenarios], fontsize=TICK_LABEL_FONTSIZE)
     ax.tick_params(axis="x", labelsize=TICK_LABEL_FONTSIZE)
